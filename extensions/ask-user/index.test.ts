@@ -5,13 +5,17 @@ import {
   type ExtensionContext,
   type Theme,
   type ToolRenderers,
+  InteractiveMode,
   initTheme,
 } from "@earendil-works/pi-coding-agent";
 import {
   CURSOR_MARKER,
   stripTerminalSequences,
   visibleWidth,
+  type ProgramStatus,
+  type Terminal,
 } from "@earendil-works/pi-tui";
+import { ProgramStatusReporter } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/program-status-reporter.js";
 import { askUserRow } from "../ui/ask-user.ts";
 import { compactToolRows } from "../ui/tool-rows.ts";
 import { type TSchema } from "typebox";
@@ -45,7 +49,10 @@ type TestTheme = {
 };
 
 type TestCustomFactory = (
-  tui: { requestRender(): void; terminal: { rows: number; columns: number } },
+  tui: {
+    requestRender(): void;
+    terminal: Pick<Terminal, "rows" | "columns" | "setProgramStatus">;
+  },
   theme: TestTheme,
   keybindings: object,
   done: (result: unknown) => void,
@@ -54,6 +61,7 @@ type TestCustomFactory = (
 type TestContext = {
   mode: ExtensionContext["mode"];
   hasUI: boolean;
+  sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionName">;
   ui?: { custom(factory: TestCustomFactory): Promise<unknown> };
 };
 
@@ -126,59 +134,128 @@ function registeredTool() {
   return { tool, pi, listeners, events };
 }
 
-async function openQuestionnaire(
-  params: AskUserInput,
-  rows = 24,
-  signal?: AbortSignal,
-) {
-  const registered = registeredTool();
-  const terminal = { rows, columns: 80 };
+function questionnaireContext(rows = 24, mountError?: Error) {
+  const statuses: ProgramStatus[] = [];
+  const terminal = {
+    rows,
+    columns: 80,
+    setProgramStatus(status: ProgramStatus) {
+      statuses.push(status);
+    },
+  };
   let component: TestComponent | undefined;
   let finished = false;
   let mount!: () => void;
   const mounted = new Promise<void>((resolve) => {
     mount = resolve;
   });
-  const result = registered.tool.execute("ask-1", params, signal, undefined, {
+  const sessionManager = { getSessionName: () => "Questionnaire test" };
+  const programStatus = new ProgramStatusReporter(
+    () => terminal as Terminal,
+    sessionManager.getSessionName,
+  );
+  programStatus.handleEvent({ type: "agent_start" });
+  const editor = { getText: () => "", setText() {} };
+  // Exercise Pi's real mount, status deduplication and disposal order, not just the factory.
+  const mode = {
+    editor,
+    keybindings: {},
+    programStatus,
+    extensionDialogs: [],
+    editorContainer: { clear() {}, addChild() {} },
+    disposeActiveSelector() {},
+    ui: {
+      terminal,
+      requestRender() {},
+      setFocus(value: unknown) {
+        if (value === editor) return;
+        if (mountError) throw mountError;
+        component = value as TestComponent;
+        component.focused = true;
+        mount();
+      },
+    },
+    pushExtensionDialog: InteractiveMode.prototype["pushExtensionDialog"],
+    removeExtensionDialog: InteractiveMode.prototype["removeExtensionDialog"],
+    showTopExtensionDialog: InteractiveMode.prototype["showTopExtensionDialog"],
+  };
+  const custom: ExtensionContext["ui"]["custom"] =
+    InteractiveMode.prototype["showExtensionCustom"];
+  const ctx: TestContext = {
     mode: "tui",
     hasUI: true,
+    sessionManager,
     ui: {
-      custom: (factory) =>
-        new Promise((resolve) => {
-          component = factory(
-            { requestRender() {}, terminal },
+      custom: (factory) => {
+        const build: Parameters<typeof custom>[0] = (
+          tui,
+          _theme,
+          keybindings,
+          done,
+        ) =>
+          factory(
+            tui,
             {
               fg: (_color, text) => text,
               bg: (_color, text) => text,
               bold: (text) => text,
             },
-            {},
-            (value) => {
-              finished = true;
-              component?.dispose();
-              resolve(value);
-            },
+            keybindings,
+            done,
           );
-          component.focused = true;
-          mount();
-        }),
+        return custom
+          .call(mode as unknown as InteractiveMode, build)
+          .then((value: unknown) => {
+            finished = true;
+            return value;
+          });
+      },
     },
-  });
-  await mounted;
-  assert.ok(component);
-  const view = component;
+  };
+  return {
+    ctx,
+    terminal,
+    statuses,
+    mounted,
+    get component() {
+      return component;
+    },
+    get finished() {
+      return finished;
+    },
+  };
+}
+
+async function openQuestionnaire(
+  params: AskUserInput,
+  rows = 24,
+  signal?: AbortSignal,
+) {
+  const registered = registeredTool();
+  const ui = questionnaireContext(rows);
+  const result = registered.tool.execute(
+    "ask-1",
+    params,
+    signal,
+    undefined,
+    ui.ctx,
+  );
+  await ui.mounted;
+  assert.ok(ui.component);
+  const view = ui.component;
   return {
     ...registered,
     result,
-    terminal,
+    terminal: ui.terminal,
+    statuses: ui.statuses,
     view,
     get finished() {
-      return finished;
+      return ui.finished;
     },
     input(...keys: string[]) {
       for (const key of keys) view.handleInput(key);
     },
-    render(width = terminal.columns) {
+    render(width = ui.terminal.columns) {
       return view.render(width);
     },
   };
@@ -230,6 +307,12 @@ test("returns structured batched question details if called without UI anyway", 
 
 test("requires every batch question before submitting and preserves single-select results", async () => {
   const run = await openQuestionnaire(batch);
+  assert.deepEqual(run.statuses.at(-1), {
+    state: "blocked",
+    app: "pi",
+    kind: "question",
+    message: "Waiting for your answer",
+  });
   run.input(ENTER, TAB, ENTER);
   assert.equal(run.finished, false);
   assert.match(run.render().join("\n"), /Priority: Unanswered/);
@@ -249,6 +332,11 @@ test("requires every batch question before submitting and preserves single-selec
     ["Small", "High"],
   );
   assert.equal(result.details.cancelled, false);
+  assert.deepEqual(run.statuses.at(-1), {
+    state: "working",
+    app: "pi",
+    message: "Questionnaire test",
+  });
   assert.deepEqual(run.events, [
     {
       name: "herdr:blocked",
@@ -371,6 +459,8 @@ test("shows a written single-select answer when returning to its tab", async () 
     run.render().join("\n"),
     /❯ ✎ Write my own answer…\n\s+Something else/,
   );
+  run.input(ESC);
+  await run.result;
 });
 
 test("multi-select combines checked options and custom text without advancing on a toggle", async () => {
@@ -519,14 +609,86 @@ test("custom-answer cursor remains visible with long options, and Esc still retu
   assert.equal(result.content[0].text, "User selected option 2: Large");
 });
 
-test("aborting an open questionnaire closes it and clears Herdr's blocked status", async () => {
+test("dismissing a questionnaire restores terminal status after Pi removes the custom dialog", async () => {
+  const run = await openQuestionnaire(batch);
+  run.input(ESC);
+  assert.equal((await run.result).details.cancelled, true);
+  assert.deepEqual(
+    run.statuses.map(({ state }) => state),
+    ["working", "blocked", "working"],
+  );
+});
+
+test("a custom-dialog mount failure clears terminal and Herdr blocked status", async () => {
+  const { tool, events } = registeredTool();
+  const ui = questionnaireContext(24, new Error("Mount failed"));
+  await assert.rejects(
+    tool.execute("ask-1", batch, undefined, undefined, ui.ctx),
+    Error,
+  );
+  assert.deepEqual(
+    ui.statuses.map(({ state }) => state),
+    ["working", "blocked", "working"],
+  );
+  assert.deepEqual(events.at(-1), {
+    name: "herdr:blocked",
+    value: { active: false },
+  });
+});
+
+test("closing one questionnaire keeps the terminal blocked while another is open", async () => {
+  const { tool } = registeredTool();
+  const ui = questionnaireContext();
+  const controller = new AbortController();
+  const first = tool.execute(
+    "ask-1",
+    batch,
+    controller.signal,
+    undefined,
+    ui.ctx,
+  );
+  await ui.mounted;
+  const firstView = ui.component;
+  const second = tool.execute("ask-2", batch, undefined, undefined, ui.ctx);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.ok(ui.component);
+  assert.notEqual(ui.component, firstView);
+  controller.abort();
+  await first;
+  assert.equal(ui.statuses.at(-1)?.state, "blocked");
+  ui.component.handleInput(ESC);
+  await second;
+  assert.equal(ui.statuses.at(-1)?.state, "working");
+});
+
+test("an already-aborted questionnaire never reports blocked", async () => {
+  const { tool, events } = registeredTool();
+  const ui = questionnaireContext();
+  const result = await tool.execute(
+    "ask-1",
+    batch,
+    AbortSignal.abort(),
+    undefined,
+    ui.ctx,
+  );
+  assert.equal(result.details.cancelled, true);
+  assert.deepEqual(
+    ui.statuses.map(({ state }) => state),
+    ["working"],
+  );
+  assert.deepEqual(events, []);
+});
+
+test("aborting an open questionnaire closes it and clears terminal and Herdr blocked status", async () => {
   const controller = new AbortController();
   const run = await openQuestionnaire(batch, 24, controller.signal);
+  assert.equal(run.statuses.at(-1)?.state, "blocked");
   controller.abort();
   const result = await run.result;
   assert.equal(run.finished, true);
   assert.equal(result.details.cancelled, true);
   assert.deepEqual(result.details.answers, []);
+  assert.equal(run.statuses.at(-1)?.state, "working");
   assert.deepEqual(run.events.at(-1), {
     name: "herdr:blocked",
     value: { active: false },

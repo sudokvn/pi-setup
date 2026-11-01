@@ -22,6 +22,7 @@ import {
   Markdown,
   matchesKey,
   Text,
+  type Terminal,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
@@ -43,6 +44,13 @@ const MAX_OPTIONS = 5;
 const MIN_QUESTIONS = 1;
 const MAX_CONTEXT_LENGTH = 300;
 export const MAX_QUESTIONS = 4;
+
+const WAITING_STATUS = {
+  state: "blocked",
+  app: "pi",
+  kind: "question",
+  message: "Waiting for your answer",
+} as const;
 
 const OptionSchema = Type.Object({
   label: Type.String({
@@ -238,6 +246,7 @@ function answerText(answer: AskUserAnswer) {
 
 export default function askUser(pi: ExtensionAPI) {
   let hiddenWithoutUI = false;
+  let openQuestionnaires = 0;
   const reconcileTool = (_event: unknown, ctx: ExtensionContext) => {
     const active = pi.getActiveTools();
     const available = ctx.mode === "tui" && ctx.hasUI;
@@ -284,8 +293,13 @@ export default function askUser(pi: ExtensionAPI) {
         return reply(buildAskUserResultMessage({ kind: "cancelled" }));
       }
 
+      let terminal: Terminal | undefined;
       const showQuestions = (uiSignal: AbortSignal) =>
         ctx.ui.custom<SelectionResult>((tui, theme, _kb, done) => {
+          terminal = tui.terminal;
+          openQuestionnaires += 1;
+          // Pi reports built-in dialogs via OSC 7501, but not custom components.
+          terminal.setProgramStatus(WAITING_STATUS);
           const isBatch = questions.length > 1;
           const submitTab = questions.length;
           const tabCount = questions.length + 1;
@@ -833,11 +847,32 @@ export default function askUser(pi: ExtensionAPI) {
           };
         });
 
-      const uiExit = await withHerdrBlocked(pi, "Waiting for your answer", () =>
-        Effect.runPromiseExit(
-          Effect.tryPromise(showQuestions),
-          signal ? { signal } : undefined,
-        ),
+      const uiExit = await withHerdrBlocked(
+        pi,
+        WAITING_STATUS.message,
+        async () => {
+          try {
+            return await Effect.runPromiseExit(
+              Effect.tryPromise(showQuestions),
+              signal ? { signal } : undefined,
+            );
+          } finally {
+            if (terminal) {
+              openQuestionnaires -= 1;
+              // Pi can deduplicate its own working status, so restore explicitly,
+              // but keep reporting blocked if a sibling questionnaire is still open.
+              terminal.setProgramStatus(
+                openQuestionnaires > 0
+                  ? WAITING_STATUS
+                  : {
+                      state: "working",
+                      app: "pi",
+                      message: ctx.sessionManager.getSessionName(),
+                    },
+              );
+            }
+          }
+        },
       );
 
       if (Exit.isFailure(uiExit)) {

@@ -62,7 +62,12 @@ type TestContext = {
   mode: ExtensionContext["mode"];
   hasUI: boolean;
   sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionName">;
-  ui?: { custom(factory: TestCustomFactory): Promise<unknown> };
+  ui?: {
+    custom(
+      factory: TestCustomFactory,
+      options?: Parameters<ExtensionContext["ui"]["custom"]>[1],
+    ): Promise<unknown>;
+  };
 };
 
 type TestTool = {
@@ -186,7 +191,7 @@ function questionnaireContext(rows = 24, mountError?: Error) {
     hasUI: true,
     sessionManager,
     ui: {
-      custom: (factory) => {
+      custom: (factory, options) => {
         const build: Parameters<typeof custom>[0] = (
           tui,
           _theme,
@@ -204,7 +209,7 @@ function questionnaireContext(rows = 24, mountError?: Error) {
             done,
           );
         return custom
-          .call(mode as unknown as InteractiveMode, build)
+          .call(mode as unknown as InteractiveMode, build, options)
           .then((value: unknown) => {
             finished = true;
             return value;
@@ -621,7 +626,7 @@ test("dismissing a questionnaire restores terminal status after Pi removes the c
   );
 });
 
-test("a custom-dialog mount failure clears terminal and Herdr blocked status", async () => {
+test("a custom-dialog mount failure leaves terminal working and clears Herdr blocked status", async () => {
   const { tool, events } = registeredTool();
   const ui = questionnaireContext(24, new Error("Mount failed"));
   await assert.rejects(
@@ -630,7 +635,7 @@ test("a custom-dialog mount failure clears terminal and Herdr blocked status", a
   );
   assert.deepEqual(
     ui.statuses.map(({ state }) => state),
-    ["working", "blocked", "working"],
+    ["working"],
   );
   assert.deepEqual(events.at(-1), {
     name: "herdr:blocked",

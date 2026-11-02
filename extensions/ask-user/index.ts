@@ -22,7 +22,6 @@ import {
   Markdown,
   matchesKey,
   Text,
-  type Terminal,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
@@ -45,9 +44,7 @@ const MIN_QUESTIONS = 1;
 const MAX_CONTEXT_LENGTH = 300;
 export const MAX_QUESTIONS = 4;
 
-const WAITING_STATUS = {
-  state: "blocked",
-  app: "pi",
+const WAITING = {
   kind: "question",
   message: "Waiting for your answer",
 } as const;
@@ -246,7 +243,6 @@ function answerText(answer: AskUserAnswer) {
 
 export default function askUser(pi: ExtensionAPI) {
   let hiddenWithoutUI = false;
-  let openQuestionnaires = 0;
   const reconcileTool = (_event: unknown, ctx: ExtensionContext) => {
     const active = pi.getActiveTools();
     const available = ctx.mode === "tui" && ctx.hasUI;
@@ -293,586 +289,573 @@ export default function askUser(pi: ExtensionAPI) {
         return reply(buildAskUserResultMessage({ kind: "cancelled" }));
       }
 
-      let terminal: Terminal | undefined;
       const showQuestions = (uiSignal: AbortSignal) =>
-        ctx.ui.custom<SelectionResult>((tui, theme, _kb, done) => {
-          terminal = tui.terminal;
-          openQuestionnaires += 1;
-          // Pi reports built-in dialogs via OSC 7501, but not custom components.
-          terminal.setProgramStatus(WAITING_STATUS);
-          const isBatch = questions.length > 1;
-          const submitTab = questions.length;
-          const tabCount = questions.length + 1;
-          const answers = new Map<number, AskUserAnswer>();
-          const selections = new Map<number, Set<number>>();
-          const customAnswers = new Map<number, string>();
-          const editorTheme: EditorTheme = {
-            borderColor: (text) => theme.fg("accent", text),
-            selectList: {
-              selectedPrefix: (text) => theme.fg("accent", text),
-              selectedText: (text) => theme.fg("accent", text),
-              description: (text) => theme.fg("muted", text),
-              scrollInfo: (text) => theme.fg("dim", text),
-              noMatch: (text) => theme.fg("warning", text),
-            },
-          };
-          const editor = new Editor(tui, editorTheme);
-          const contextView = context
-            ? new Markdown(context, 0, 0, getMarkdownTheme())
-            : undefined;
-
-          let currentTab = 0;
-          let optionIndex = 0;
-          let editMode = false;
-          let cachedLines: string[] | undefined;
-          let cachedWidth = 0;
-          let cachedRows = 0;
-          let scrollTop = 0;
-          let bodyHeight = 1;
-          let bodyLength = 0;
-          let revealFocus = true;
-          let settled = false;
-
-          function orderedAnswers() {
-            return [...answers.values()].sort(
-              (left, right) => left.questionIndex - right.questionIndex,
-            );
-          }
-
-          function finish(result: SelectionResult) {
-            if (settled) return;
-            settled = true;
-            uiSignal.removeEventListener("abort", cancel);
-            done(result);
-          }
-
-          function cancel() {
-            finish(null);
-          }
-
-          uiSignal.addEventListener("abort", cancel, { once: true });
-          if (uiSignal.aborted) queueMicrotask(cancel);
-
-          function refresh(followFocus = true) {
-            revealFocus = followFocus;
-            cachedLines = undefined;
-            tui.requestRender();
-          }
-
-          function currentQuestion() {
-            return questions[currentTab];
-          }
-
-          function currentOptions(): DisplayOption[] {
-            const question = currentQuestion();
-            if (!question) return [];
-            const answer = answers.get(currentTab);
-            return [
-              ...question.options.map((option) => ({
-                ...option,
-                kind: "option" as const,
-              })),
-              {
-                label: "Write my own answer…",
-                description: question.multiSelect
-                  ? customAnswers.get(currentTab)
-                  : answer?.wasCustom
-                    ? answer.answer
-                    : undefined,
-                kind: "custom",
+        ctx.ui.custom<SelectionResult>(
+          (tui, theme, _kb, done) => {
+            const isBatch = questions.length > 1;
+            const submitTab = questions.length;
+            const tabCount = questions.length + 1;
+            const answers = new Map<number, AskUserAnswer>();
+            const selections = new Map<number, Set<number>>();
+            const customAnswers = new Map<number, string>();
+            const editorTheme: EditorTheme = {
+              borderColor: (text) => theme.fg("accent", text),
+              selectList: {
+                selectedPrefix: (text) => theme.fg("accent", text),
+                selectedText: (text) => theme.fg("accent", text),
+                description: (text) => theme.fg("muted", text),
+                scrollInfo: (text) => theme.fg("dim", text),
+                noMatch: (text) => theme.fg("warning", text),
               },
-              ...(question.multiSelect
-                ? [{ label: "Done", kind: "done" as const }]
-                : []),
-            ] satisfies DisplayOption[];
-          }
+            };
+            const editor = new Editor(tui, editorTheme);
+            const contextView = context
+              ? new Markdown(context, 0, 0, getMarkdownTheme())
+              : undefined;
 
-          function selectTab(tab: number) {
-            currentTab = (tab + tabCount) % tabCount;
-            editMode = false;
-            editor.setText("");
-            scrollTop = 0;
+            let currentTab = 0;
+            let optionIndex = 0;
+            let editMode = false;
+            let cachedLines: string[] | undefined;
+            let cachedWidth = 0;
+            let cachedRows = 0;
+            let scrollTop = 0;
+            let bodyHeight = 1;
+            let bodyLength = 0;
+            let revealFocus = true;
+            let settled = false;
 
-            const existing = answers.get(currentTab);
-            if (existing?.selected !== undefined) {
-              optionIndex = questions[currentTab].options.findIndex((option) =>
-                existing.selected.includes(option.label),
+            function orderedAnswers() {
+              return [...answers.values()].sort(
+                (left, right) => left.questionIndex - right.questionIndex,
               );
-              if (optionIndex < 0)
-                optionIndex = questions[currentTab].options.length;
-            } else if (existing?.wasCustom) {
-              optionIndex = questions[currentTab].options.length;
-            } else if (existing?.index) {
-              optionIndex = existing.index - 1;
-            } else {
-              optionIndex = 0;
-            }
-            refresh();
-          }
-
-          function saveAnswer(
-            questionIndex: number,
-            answer: string,
-            wasCustom: boolean,
-            index?: number,
-          ) {
-            const question = questions[questionIndex];
-            answers.set(questionIndex, {
-              questionIndex,
-              label: question.label,
-              question: question.question,
-              options: question.options.map((option) => option.label),
-              answer,
-              wasCustom,
-              index,
-            });
-          }
-
-          function advanceAfterAnswer() {
-            if (!isBatch) {
-              finish({ answers: orderedAnswers() });
-              return;
             }
 
-            selectTab(
-              currentTab < questions.length - 1 ? currentTab + 1 : submitTab,
-            );
-          }
-
-          editor.onSubmit = (value) => {
-            const trimmed = value.trim();
-            editMode = false;
-            editor.setText("");
-            if (currentQuestion().multiSelect) {
-              if (trimmed) customAnswers.set(currentTab, trimmed);
-              else customAnswers.delete(currentTab);
-              answers.delete(currentTab);
-              optionIndex = currentOptions().length - 1;
-              refresh();
-            } else if (trimmed) {
-              saveAnswer(currentTab, trimmed, true);
-              advanceAfterAnswer();
-            } else {
-              refresh();
+            function finish(result: SelectionResult) {
+              if (settled) return;
+              settled = true;
+              uiSignal.removeEventListener("abort", cancel);
+              done(result);
             }
-          };
 
-          function toggleOption(index: number) {
-            const selected = selections.get(currentTab) ?? new Set<number>();
-            if (selected.has(index)) selected.delete(index);
-            else selected.add(index);
-            selections.set(currentTab, selected);
-            answers.delete(currentTab);
-            refresh();
-          }
+            function cancel() {
+              finish(null);
+            }
 
-          function commitMultiAnswer() {
-            const question = currentQuestion();
-            const selected = question.options
-              .filter((_option, index) =>
-                selections.get(currentTab)?.has(index),
-              )
-              .map((option) => option.label);
-            const answer = customAnswers.get(currentTab) ?? "";
-            if (selected.length === 0 && !answer) return;
-            answers.set(currentTab, {
-              questionIndex: currentTab,
-              label: question.label,
-              question: question.question,
-              options: question.options.map((option) => option.label),
-              selected,
-              answer,
-            });
-            advanceAfterAnswer();
-          }
+            uiSignal.addEventListener("abort", cancel, { once: true });
+            if (uiSignal.aborted) queueMicrotask(cancel);
 
-          function selectOption(index: number) {
-            const selected = currentOptions()[index];
-            if (!selected) return;
+            function refresh(followFocus = true) {
+              revealFocus = followFocus;
+              cachedLines = undefined;
+              tui.requestRender();
+            }
 
-            optionIndex = index;
-            if (selected.kind === "custom") {
-              editMode = true;
+            function currentQuestion() {
+              return questions[currentTab];
+            }
+
+            function currentOptions(): DisplayOption[] {
+              const question = currentQuestion();
+              if (!question) return [];
+              const answer = answers.get(currentTab);
+              return [
+                ...question.options.map((option) => ({
+                  ...option,
+                  kind: "option" as const,
+                })),
+                {
+                  label: "Write my own answer…",
+                  description: question.multiSelect
+                    ? customAnswers.get(currentTab)
+                    : answer?.wasCustom
+                      ? answer.answer
+                      : undefined,
+                  kind: "custom",
+                },
+                ...(question.multiSelect
+                  ? [{ label: "Done", kind: "done" as const }]
+                  : []),
+              ] satisfies DisplayOption[];
+            }
+
+            function selectTab(tab: number) {
+              currentTab = (tab + tabCount) % tabCount;
+              editMode = false;
+              editor.setText("");
+              scrollTop = 0;
+
               const existing = answers.get(currentTab);
-              editor.setText(
-                currentQuestion().multiSelect
-                  ? (customAnswers.get(currentTab) ?? "")
-                  : existing?.wasCustom
-                    ? existing.answer
-                    : "",
-              );
+              if (existing?.selected !== undefined) {
+                optionIndex = questions[currentTab].options.findIndex(
+                  (option) => existing.selected.includes(option.label),
+                );
+                if (optionIndex < 0)
+                  optionIndex = questions[currentTab].options.length;
+              } else if (existing?.wasCustom) {
+                optionIndex = questions[currentTab].options.length;
+              } else if (existing?.index) {
+                optionIndex = existing.index - 1;
+              } else {
+                optionIndex = 0;
+              }
               refresh();
-            } else if (selected.kind === "done") {
-              commitMultiAnswer();
-            } else if (currentQuestion().multiSelect) {
-              toggleOption(index);
-            } else {
-              saveAnswer(currentTab, selected.label, false, index + 1);
+            }
+
+            function saveAnswer(
+              questionIndex: number,
+              answer: string,
+              wasCustom: boolean,
+              index?: number,
+            ) {
+              const question = questions[questionIndex];
+              answers.set(questionIndex, {
+                questionIndex,
+                label: question.label,
+                question: question.question,
+                options: question.options.map((option) => option.label),
+                answer,
+                wasCustom,
+                index,
+              });
+            }
+
+            function advanceAfterAnswer() {
+              if (!isBatch) {
+                finish({ answers: orderedAnswers() });
+                return;
+              }
+
+              selectTab(
+                currentTab < questions.length - 1 ? currentTab + 1 : submitTab,
+              );
+            }
+
+            editor.onSubmit = (value) => {
+              const trimmed = value.trim();
+              editMode = false;
+              editor.setText("");
+              if (currentQuestion().multiSelect) {
+                if (trimmed) customAnswers.set(currentTab, trimmed);
+                else customAnswers.delete(currentTab);
+                answers.delete(currentTab);
+                optionIndex = currentOptions().length - 1;
+                refresh();
+              } else if (trimmed) {
+                saveAnswer(currentTab, trimmed, true);
+                advanceAfterAnswer();
+              } else {
+                refresh();
+              }
+            };
+
+            function toggleOption(index: number) {
+              const selected = selections.get(currentTab) ?? new Set<number>();
+              if (selected.has(index)) selected.delete(index);
+              else selected.add(index);
+              selections.set(currentTab, selected);
+              answers.delete(currentTab);
+              refresh();
+            }
+
+            function commitMultiAnswer() {
+              const question = currentQuestion();
+              const selected = question.options
+                .filter((_option, index) =>
+                  selections.get(currentTab)?.has(index),
+                )
+                .map((option) => option.label);
+              const answer = customAnswers.get(currentTab) ?? "";
+              if (selected.length === 0 && !answer) return;
+              answers.set(currentTab, {
+                questionIndex: currentTab,
+                label: question.label,
+                question: question.question,
+                options: question.options.map((option) => option.label),
+                selected,
+                answer,
+              });
               advanceAfterAnswer();
             }
-          }
 
-          function handleInput(data: string) {
-            if (editMode) {
-              if (matchesKey(data, Key.escape)) {
-                editMode = false;
-                editor.setText("");
+            function selectOption(index: number) {
+              const selected = currentOptions()[index];
+              if (!selected) return;
+
+              optionIndex = index;
+              if (selected.kind === "custom") {
+                editMode = true;
+                const existing = answers.get(currentTab);
+                editor.setText(
+                  currentQuestion().multiSelect
+                    ? (customAnswers.get(currentTab) ?? "")
+                    : existing?.wasCustom
+                      ? existing.answer
+                      : "",
+                );
+                refresh();
+              } else if (selected.kind === "done") {
+                commitMultiAnswer();
+              } else if (currentQuestion().multiSelect) {
+                toggleOption(index);
+              } else {
+                saveAnswer(currentTab, selected.label, false, index + 1);
+                advanceAfterAnswer();
+              }
+            }
+
+            function handleInput(data: string) {
+              if (editMode) {
+                if (matchesKey(data, Key.escape)) {
+                  editMode = false;
+                  editor.setText("");
+                  refresh();
+                  return;
+                }
+                editor.handleInput(data);
                 refresh();
                 return;
               }
-              editor.handleInput(data);
-              refresh();
-              return;
-            }
 
-            if (isBatch) {
-              if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
-                selectTab(currentTab + 1);
+              if (isBatch) {
+                if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
+                  selectTab(currentTab + 1);
+                  return;
+                }
+                if (
+                  matchesKey(data, Key.shift("tab")) ||
+                  matchesKey(data, Key.left)
+                ) {
+                  selectTab(currentTab - 1);
+                  return;
+                }
+              }
+
+              // Unmodified PageUp/PageDown belong to Pi's transcript in fullscreen mode.
+              const pageUp = matchesKey(data, Key.ctrl("pageUp"));
+              if (pageUp || matchesKey(data, Key.ctrl("pageDown"))) {
+                const direction = pageUp ? -1 : 1;
+                scrollTop = Math.max(
+                  0,
+                  Math.min(
+                    scrollTop + direction * Math.max(1, bodyHeight - 1),
+                    bodyLength - bodyHeight,
+                  ),
+                );
+                refresh(false);
+                return;
+              }
+
+              if (currentTab === submitTab) {
+                if (
+                  matchesKey(data, Key.enter) &&
+                  answers.size === questions.length
+                ) {
+                  finish({ answers: orderedAnswers() });
+                } else if (matchesKey(data, Key.escape)) {
+                  finish(null);
+                }
+                return;
+              }
+
+              const options = currentOptions();
+              if (matchesKey(data, Key.up) || data === "k") {
+                optionIndex =
+                  (optionIndex - 1 + options.length) % options.length;
+                refresh();
+                return;
+              }
+              if (matchesKey(data, Key.down) || data === "j") {
+                optionIndex = (optionIndex + 1) % options.length;
+                refresh();
+                return;
+              }
+
+              if (
+                data.length === 1 &&
+                data >= "1" &&
+                data <= String(currentQuestion().options.length + 1)
+              ) {
+                selectOption(Number(data) - 1);
+                return;
+              }
+
+              if (matchesKey(data, Key.enter)) {
+                selectOption(optionIndex);
                 return;
               }
               if (
-                matchesKey(data, Key.shift("tab")) ||
-                matchesKey(data, Key.left)
+                matchesKey(data, Key.space) &&
+                currentQuestion().multiSelect &&
+                options[optionIndex].kind === "option"
               ) {
-                selectTab(currentTab - 1);
+                toggleOption(optionIndex);
                 return;
               }
-            }
 
-            // Unmodified PageUp/PageDown belong to Pi's transcript in fullscreen mode.
-            const pageUp = matchesKey(data, Key.ctrl("pageUp"));
-            if (pageUp || matchesKey(data, Key.ctrl("pageDown"))) {
-              const direction = pageUp ? -1 : 1;
-              scrollTop = Math.max(
-                0,
-                Math.min(
-                  scrollTop + direction * Math.max(1, bodyHeight - 1),
-                  bodyLength - bodyHeight,
-                ),
-              );
-              refresh(false);
-              return;
-            }
-
-            if (currentTab === submitTab) {
-              if (
-                matchesKey(data, Key.enter) &&
-                answers.size === questions.length
-              ) {
-                finish({ answers: orderedAnswers() });
-              } else if (matchesKey(data, Key.escape)) {
+              if (matchesKey(data, Key.escape)) {
                 finish(null);
               }
-              return;
             }
 
-            const options = currentOptions();
-            if (matchesKey(data, Key.up) || data === "k") {
-              optionIndex = (optionIndex - 1 + options.length) % options.length;
-              refresh();
-              return;
-            }
-            if (matchesKey(data, Key.down) || data === "j") {
-              optionIndex = (optionIndex + 1) % options.length;
-              refresh();
-              return;
-            }
+            function render(width: number) {
+              const rows = Math.max(4, tui.terminal.rows || 30);
+              const renderWidth = Math.max(1, width);
+              if (
+                cachedLines &&
+                cachedWidth === renderWidth &&
+                cachedRows === rows
+              )
+                return cachedLines;
+              if (cachedWidth !== renderWidth || cachedRows !== rows)
+                revealFocus = true;
+              cachedWidth = renderWidth;
+              cachedRows = rows;
 
-            if (
-              data.length === 1 &&
-              data >= "1" &&
-              data <= String(currentQuestion().options.length + 1)
-            ) {
-              selectOption(Number(data) - 1);
-              return;
-            }
-
-            if (matchesKey(data, Key.enter)) {
-              selectOption(optionIndex);
-              return;
-            }
-            if (
-              matchesKey(data, Key.space) &&
-              currentQuestion().multiSelect &&
-              options[optionIndex].kind === "option"
-            ) {
-              toggleOption(optionIndex);
-              return;
-            }
-
-            if (matchesKey(data, Key.escape)) {
-              finish(null);
-            }
-          }
-
-          function render(width: number) {
-            const rows = Math.max(4, tui.terminal.rows || 30);
-            const renderWidth = Math.max(1, width);
-            if (
-              cachedLines &&
-              cachedWidth === renderWidth &&
-              cachedRows === rows
-            )
-              return cachedLines;
-            if (cachedWidth !== renderWidth || cachedRows !== rows)
-              revealFocus = true;
-            cachedWidth = renderWidth;
-            cachedRows = rows;
-
-            // Plain decision context stays adjacent to the question box, outside
-            // its border and without the transcript tool row's wrapper or gap.
-            const intro = contextView
-              ? [
-                  ...contextView
-                    .render(Math.max(1, renderWidth - 2))
-                    .map((line) => ` ${line}`),
-                  "",
-                ]
-              : [];
-            const rowBudget = Math.max(
-              4,
-              Math.min(rows - 2, Math.max(12, Math.floor(rows * 0.7))) -
-                intro.length,
-            );
-            const heading: string[] = [];
-            const body: string[] = [];
-            let focus: [number, number] | undefined;
-            const question = currentQuestion();
-            const options = currentOptions();
-            const title = isBatch ? " Questions " : " Question ";
-            heading.push(
-              theme.fg(
-                "accent",
-                `─${title}${"─".repeat(Math.max(0, renderWidth - title.length - 1))}`,
-              ),
-            );
-
-            if (isBatch) {
-              const labelWidth = Math.max(
-                1,
-                Math.floor((renderWidth - 15) / questions.length) - 5,
+              // Plain decision context stays adjacent to the question box, outside
+              // its border and without the transcript tool row's wrapper or gap.
+              const intro = contextView
+                ? [
+                    ...contextView
+                      .render(Math.max(1, renderWidth - 2))
+                      .map((line) => ` ${line}`),
+                    "",
+                  ]
+                : [];
+              const rowBudget = Math.max(
+                4,
+                Math.min(rows - 2, Math.max(12, Math.floor(rows * 0.7))) -
+                  intro.length,
               );
-              const tabs = questions.map((item, index) => {
-                const answered = answers.has(index);
-                const text = ` ${answered ? "■" : "□"} ${truncateToWidth(item.label, labelWidth)} `;
-                return index === currentTab
-                  ? theme.bg("selectedBg", theme.fg("text", text))
-                  : theme.fg(answered ? "success" : "muted", text);
-              });
-              const submitText = " ✓ Submit ";
-              tabs.push(
-                currentTab === submitTab
-                  ? theme.bg("selectedBg", theme.fg("text", submitText))
-                  : theme.fg(
-                      answers.size === questions.length ? "success" : "dim",
-                      submitText,
-                    ),
-              );
-              heading.push(` ${tabs.join(" ")}`);
-            }
-
-            if (currentTab === submitTab) {
+              const heading: string[] = [];
+              const body: string[] = [];
+              let focus: [number, number] | undefined;
+              const question = currentQuestion();
+              const options = currentOptions();
+              const title = isBatch ? " Questions " : " Question ";
               heading.push(
-                theme.fg("accent", theme.bold(" Review your answers")),
-              );
-              for (let index = 0; index < questions.length; index++) {
-                const answer = answers.get(index);
-                const text = `${questions[index].label}: ${answer ? answerText(answer) : "Unanswered"}`;
-                for (const line of wrapTextWithAnsi(
-                  text,
-                  Math.max(1, renderWidth - 2),
-                )) {
-                  body.push(` ${theme.fg(answer ? "text" : "warning", line)}`);
-                }
-                body.push("");
-              }
-              body.push(
                 theme.fg(
-                  answers.size === questions.length ? "success" : "warning",
-                  answers.size === questions.length
-                    ? " Press Enter to submit"
-                    : " Answer every question before submitting",
+                  "accent",
+                  `─${title}${"─".repeat(Math.max(0, renderWidth - title.length - 1))}`,
                 ),
               );
-            } else if (question) {
-              for (const line of wrapTextWithAnsi(
-                question.question,
-                Math.max(1, renderWidth - 2),
-              )) {
-                heading.push(` ${theme.fg("text", theme.bold(line))}`);
-              }
-              heading.push("");
 
-              for (let index = 0; index < options.length; index++) {
-                const option = options[index];
-                const start = body.length;
-                const highlighted = index === optionIndex;
-                const checked =
-                  option.kind === "option"
-                    ? selections.get(currentTab)?.has(index)
-                    : customAnswers.has(currentTab);
-                const marker =
-                  option.kind === "done"
-                    ? "→"
-                    : `${question.multiSelect ? `[${checked ? "x" : " "}] ` : ""}${option.kind === "custom" ? "✎" : `${index + 1}.`}`;
-                const indent = " ".repeat(3 + marker.length + 1);
-                const textWidth = Math.max(1, renderWidth - indent.length);
-                const color = highlighted
-                  ? "accent"
-                  : option.kind === "option"
-                    ? "text"
-                    : "muted";
-                const [first = "", ...rest] = wrapTextWithAnsi(
-                  option.label,
-                  textWidth,
+              if (isBatch) {
+                const labelWidth = Math.max(
+                  1,
+                  Math.floor((renderWidth - 15) / questions.length) - 5,
                 );
-                body.push(
-                  `${highlighted ? theme.fg("accent", " ❯ ") : "   "}${theme.fg(color, `${marker} ${first}`)}`,
+                const tabs = questions.map((item, index) => {
+                  const answered = answers.has(index);
+                  const text = ` ${answered ? "■" : "□"} ${truncateToWidth(item.label, labelWidth)} `;
+                  return index === currentTab
+                    ? theme.bg("selectedBg", theme.fg("text", text))
+                    : theme.fg(answered ? "success" : "muted", text);
+                });
+                const submitText = " ✓ Submit ";
+                tabs.push(
+                  currentTab === submitTab
+                    ? theme.bg("selectedBg", theme.fg("text", submitText))
+                    : theme.fg(
+                        answers.size === questions.length ? "success" : "dim",
+                        submitText,
+                      ),
                 );
-                body.push(
-                  ...rest.map((line) => `${indent}${theme.fg(color, line)}`),
+                heading.push(` ${tabs.join(" ")}`);
+              }
+
+              if (currentTab === submitTab) {
+                heading.push(
+                  theme.fg("accent", theme.bold(" Review your answers")),
                 );
-                const description =
-                  option.kind === "done" &&
-                  !selections.get(currentTab)?.size &&
-                  !customAnswers.has(currentTab)
-                    ? "Select at least one option or write an answer."
-                    : option.description;
-                if (description) {
-                  for (const line of wrapTextWithAnsi(description, textWidth)) {
-                    body.push(`${indent}${theme.fg("muted", line)}`);
+                for (let index = 0; index < questions.length; index++) {
+                  const answer = answers.get(index);
+                  const text = `${questions[index].label}: ${answer ? answerText(answer) : "Unanswered"}`;
+                  for (const line of wrapTextWithAnsi(
+                    text,
+                    Math.max(1, renderWidth - 2),
+                  )) {
+                    body.push(
+                      ` ${theme.fg(answer ? "text" : "warning", line)}`,
+                    );
                   }
+                  body.push("");
                 }
-                if (highlighted) focus = [start, body.length];
-              }
-
-              if (editMode) {
-                body.push("", theme.fg("muted", " Your answer:"));
-                const editorLines = editor.render(Math.max(1, renderWidth - 2));
-                const cursorRow = editorLines.findIndex((line) =>
-                  line.includes(CURSOR_MARKER),
+                body.push(
+                  theme.fg(
+                    answers.size === questions.length ? "success" : "warning",
+                    answers.size === questions.length
+                      ? " Press Enter to submit"
+                      : " Answer every question before submitting",
+                  ),
                 );
-                const focusRow =
-                  body.length +
-                  (cursorRow < 0 ? editorLines.length - 2 : cursorRow);
-                focus = [focusRow, focusRow + 1];
-                body.push(...editorLines.map((line) => ` ${line}`));
+              } else if (question) {
+                for (const line of wrapTextWithAnsi(
+                  question.question,
+                  Math.max(1, renderWidth - 2),
+                )) {
+                  heading.push(` ${theme.fg("text", theme.bold(line))}`);
+                }
+                heading.push("");
+
+                for (let index = 0; index < options.length; index++) {
+                  const option = options[index];
+                  const start = body.length;
+                  const highlighted = index === optionIndex;
+                  const checked =
+                    option.kind === "option"
+                      ? selections.get(currentTab)?.has(index)
+                      : customAnswers.has(currentTab);
+                  const marker =
+                    option.kind === "done"
+                      ? "→"
+                      : `${question.multiSelect ? `[${checked ? "x" : " "}] ` : ""}${option.kind === "custom" ? "✎" : `${index + 1}.`}`;
+                  const indent = " ".repeat(3 + marker.length + 1);
+                  const textWidth = Math.max(1, renderWidth - indent.length);
+                  const color = highlighted
+                    ? "accent"
+                    : option.kind === "option"
+                      ? "text"
+                      : "muted";
+                  const [first = "", ...rest] = wrapTextWithAnsi(
+                    option.label,
+                    textWidth,
+                  );
+                  body.push(
+                    `${highlighted ? theme.fg("accent", " ❯ ") : "   "}${theme.fg(color, `${marker} ${first}`)}`,
+                  );
+                  body.push(
+                    ...rest.map((line) => `${indent}${theme.fg(color, line)}`),
+                  );
+                  const description =
+                    option.kind === "done" &&
+                    !selections.get(currentTab)?.size &&
+                    !customAnswers.has(currentTab)
+                      ? "Select at least one option or write an answer."
+                      : option.description;
+                  if (description) {
+                    for (const line of wrapTextWithAnsi(
+                      description,
+                      textWidth,
+                    )) {
+                      body.push(`${indent}${theme.fg("muted", line)}`);
+                    }
+                  }
+                  if (highlighted) focus = [start, body.length];
+                }
+
+                if (editMode) {
+                  body.push("", theme.fg("muted", " Your answer:"));
+                  const editorLines = editor.render(
+                    Math.max(1, renderWidth - 2),
+                  );
+                  const cursorRow = editorLines.findIndex((line) =>
+                    line.includes(CURSOR_MARKER),
+                  );
+                  const focusRow =
+                    body.length +
+                    (cursorRow < 0 ? editorLines.length - 2 : cursorRow);
+                  focus = [focusRow, focusRow + 1];
+                  body.push(...editorLines.map((line) => ` ${line}`));
+                }
               }
-            }
 
-            const tabHint = isBatch ? "Tab tabs • " : "";
-            let hint = editMode
-              ? ` Enter ${question?.multiSelect ? "save text" : "submit"} • Esc back to options`
-              : currentTab === submitTab
-                ? " Tab/←→ navigate • Enter submit • Esc dismiss"
-                : question?.multiSelect
-                  ? ` ${tabHint}↑↓ move • Space/Enter toggle • Done confirm • Esc dismiss`
-                  : ` ${tabHint}↑↓/jk move • 1-${options.length} choose • Enter confirm • Esc dismiss`;
-            if (visibleWidth(hint) > renderWidth) {
-              hint = editMode
-                ? " Enter save • Esc back"
-                : question?.multiSelect
-                  ? " Space toggle • Done confirm • Esc dismiss"
-                  : " Enter confirm • Esc dismiss";
-            }
-            const footerRows = rowBudget >= 6 ? 3 : 1;
-            const headingRows = Math.max(
-              1,
-              Math.min(Math.floor(rowBudget / 2), rowBudget - footerRows - 1),
-            );
-            // Very long questions remain readable by scrolling, rather than being discarded.
-            const headingOverflow = heading.splice(headingRows);
-            body.unshift(...headingOverflow);
-            const offset = headingOverflow.length;
-            if (focus) focus = [focus[0] + offset, focus[1] + offset];
-            bodyHeight = Math.max(1, rowBudget - heading.length - footerRows);
-            bodyLength = body.length;
-
-            // Clip explicitly: ScrollView's layout clipping is only available in fullscreen mode.
-            if (revealFocus && focus) {
-              if (focus[0] < scrollTop) scrollTop = focus[0];
-              if (focus[1] > scrollTop + bodyHeight) {
-                if (focus[1] - focus[0] <= bodyHeight)
-                  scrollTop = focus[1] - bodyHeight;
-                // For an option taller than the view, keep its first line visible.
-                else if (focus[0] >= scrollTop + bodyHeight)
-                  scrollTop = focus[0];
+              const tabHint = isBatch ? "Tab tabs • " : "";
+              let hint = editMode
+                ? ` Enter ${question?.multiSelect ? "save text" : "submit"} • Esc back to options`
+                : currentTab === submitTab
+                  ? " Tab/←→ navigate • Enter submit • Esc dismiss"
+                  : question?.multiSelect
+                    ? ` ${tabHint}↑↓ move • Space/Enter toggle • Done confirm • Esc dismiss`
+                    : ` ${tabHint}↑↓/jk move • 1-${options.length} choose • Enter confirm • Esc dismiss`;
+              if (visibleWidth(hint) > renderWidth) {
+                hint = editMode
+                  ? " Enter save • Esc back"
+                  : question?.multiSelect
+                    ? " Space toggle • Done confirm • Esc dismiss"
+                    : " Enter confirm • Esc dismiss";
               }
-            }
-            scrollTop = Math.max(
-              0,
-              Math.min(scrollTop, body.length - bodyHeight),
-            );
-            revealFocus = false;
-            const overflow = [
-              ...(scrollTop > 0 ? ["↑ more above"] : []),
-              ...(scrollTop + bodyHeight < body.length ? ["↓ more below"] : []),
-            ];
-            let scrollHint = ` ${overflow.join(" • ")} • Ctrl+PgUp/PgDn scroll`;
-            if (visibleWidth(scrollHint) > renderWidth) {
-              scrollHint = ` ${scrollTop > 0 ? "↑" : ""}${scrollTop + bodyHeight < body.length ? "↓" : ""} Ctrl+PgUp/PgDn scroll`;
-            }
-            const footer =
-              footerRows === 1
-                ? [theme.fg("dim", hint)]
-                : [
-                    overflow.length ? theme.fg("dim", scrollHint) : "",
-                    theme.fg("dim", hint),
-                    theme.fg("accent", "─".repeat(renderWidth)),
-                  ];
-            const visible = body.slice(scrollTop, scrollTop + bodyHeight);
-            cachedLines = [...intro, ...heading, ...visible, ...footer].map(
-              (line) => truncateToWidth(line, renderWidth),
-            );
-            return cachedLines;
-          }
-
-          return {
-            render,
-            get focused() {
-              return editor.focused;
-            },
-            set focused(value: boolean) {
-              editor.focused = value;
-            },
-            invalidate: () => {
-              cachedLines = undefined;
-              editor.invalidate();
-              contextView?.invalidate();
-            },
-            handleInput,
-            dispose: () => {
-              uiSignal.removeEventListener("abort", cancel);
-            },
-          };
-        });
-
-      const uiExit = await withHerdrBlocked(
-        pi,
-        WAITING_STATUS.message,
-        async () => {
-          try {
-            return await Effect.runPromiseExit(
-              Effect.tryPromise(showQuestions),
-              signal ? { signal } : undefined,
-            );
-          } finally {
-            if (terminal) {
-              openQuestionnaires -= 1;
-              // Pi can deduplicate its own working status, so restore explicitly,
-              // but keep reporting blocked if a sibling questionnaire is still open.
-              terminal.setProgramStatus(
-                openQuestionnaires > 0
-                  ? WAITING_STATUS
-                  : {
-                      state: "working",
-                      app: "pi",
-                      message: ctx.sessionManager.getSessionName(),
-                    },
+              const footerRows = rowBudget >= 6 ? 3 : 1;
+              const headingRows = Math.max(
+                1,
+                Math.min(Math.floor(rowBudget / 2), rowBudget - footerRows - 1),
               );
+              // Very long questions remain readable by scrolling, rather than being discarded.
+              const headingOverflow = heading.splice(headingRows);
+              body.unshift(...headingOverflow);
+              const offset = headingOverflow.length;
+              if (focus) focus = [focus[0] + offset, focus[1] + offset];
+              bodyHeight = Math.max(1, rowBudget - heading.length - footerRows);
+              bodyLength = body.length;
+
+              // Clip explicitly: ScrollView's layout clipping is only available in fullscreen mode.
+              if (revealFocus && focus) {
+                if (focus[0] < scrollTop) scrollTop = focus[0];
+                if (focus[1] > scrollTop + bodyHeight) {
+                  if (focus[1] - focus[0] <= bodyHeight)
+                    scrollTop = focus[1] - bodyHeight;
+                  // For an option taller than the view, keep its first line visible.
+                  else if (focus[0] >= scrollTop + bodyHeight)
+                    scrollTop = focus[0];
+                }
+              }
+              scrollTop = Math.max(
+                0,
+                Math.min(scrollTop, body.length - bodyHeight),
+              );
+              revealFocus = false;
+              const overflow = [
+                ...(scrollTop > 0 ? ["↑ more above"] : []),
+                ...(scrollTop + bodyHeight < body.length
+                  ? ["↓ more below"]
+                  : []),
+              ];
+              let scrollHint = ` ${overflow.join(" • ")} • Ctrl+PgUp/PgDn scroll`;
+              if (visibleWidth(scrollHint) > renderWidth) {
+                scrollHint = ` ${scrollTop > 0 ? "↑" : ""}${scrollTop + bodyHeight < body.length ? "↓" : ""} Ctrl+PgUp/PgDn scroll`;
+              }
+              const footer =
+                footerRows === 1
+                  ? [theme.fg("dim", hint)]
+                  : [
+                      overflow.length ? theme.fg("dim", scrollHint) : "",
+                      theme.fg("dim", hint),
+                      theme.fg("accent", "─".repeat(renderWidth)),
+                    ];
+              const visible = body.slice(scrollTop, scrollTop + bodyHeight);
+              cachedLines = [...intro, ...heading, ...visible, ...footer].map(
+                (line) => truncateToWidth(line, renderWidth),
+              );
+              return cachedLines;
             }
-          }
-        },
+
+            return {
+              render,
+              get focused() {
+                return editor.focused;
+              },
+              set focused(value: boolean) {
+                editor.focused = value;
+              },
+              invalidate: () => {
+                cachedLines = undefined;
+                editor.invalidate();
+                contextView?.invalidate();
+              },
+              handleInput,
+              dispose: () => {
+                uiSignal.removeEventListener("abort", cancel);
+              },
+            };
+          },
+          { blocked: WAITING },
+        );
+
+      const uiExit = await withHerdrBlocked(pi, WAITING.message, () =>
+        Effect.runPromiseExit(
+          Effect.tryPromise(showQuestions),
+          signal ? { signal } : undefined,
+        ),
       );
 
       if (Exit.isFailure(uiExit)) {

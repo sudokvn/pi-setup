@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { stringEnum } from "../shared/schema.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -171,13 +171,13 @@ export function registerSearchTool(pi: ExtensionAPI, call: CallHosted) {
       includeDomains: domains,
       excludeDomains: domains,
       recency: Type.Optional(
-        StringEnum(["hour", "day", "week", "month", "year"] as const, {
+        stringEnum(["hour", "day", "week", "month", "year"] as const, {
           description:
             "Restrict by publication recency. Provider date precision may differ.",
         }),
       ),
       provider: Type.Optional(
-        StringEnum(["exa", "firecrawl"] as const, {
+        stringEnum(["exa", "firecrawl"] as const, {
           description:
             "Explicit provider for a targeted retry; disables automatic fallback.",
         }),

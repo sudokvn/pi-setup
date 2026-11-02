@@ -381,6 +381,8 @@ function renderCall(
         isError: false,
         durationMs: isPartial ? undefined : 1000,
         outputPad: 0,
+        keyText: (key) => key,
+        keyHint: (key, description) => `${key} ${description}`,
       })
       .render(80),
   );

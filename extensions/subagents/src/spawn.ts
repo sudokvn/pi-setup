@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { stringEnum } from "../../shared/schema.ts";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -56,14 +56,14 @@ const workingDir = Type.Optional(
 const profileParameters = Type.Object(
   {
     ...common,
-    profile: StringEnum(PROFILE_NAMES, { description: descriptions.profile }),
+    profile: stringEnum(PROFILE_NAMES, { description: descriptions.profile }),
     workingDir,
     reviewTarget: Type.Optional(
       Type.Union(
         [
           Type.Object(
             {
-              type: StringEnum([
+              type: stringEnum([
                 "uncommittedChanges",
                 "baseBranch",
                 "commit",
@@ -87,7 +87,7 @@ const profileParameters = Type.Object(
 const directParameters = Type.Object(
   {
     ...common,
-    harness: StringEnum(BACKEND_NAMES, { description: descriptions.harness }),
+    harness: stringEnum(BACKEND_NAMES, { description: descriptions.harness }),
     workingDir,
     model: Type.Optional(
       Type.Union([Type.String({ minLength: 1 }), Type.Null()], {
@@ -95,7 +95,7 @@ const directParameters = Type.Object(
       }),
     ),
     reasoningEffort: Type.Optional(
-      Type.Union([StringEnum(REASONING_EFFORTS), Type.Null()], {
+      Type.Union([stringEnum(REASONING_EFFORTS), Type.Null()], {
         description: descriptions.reasoningEffort,
       }),
     ),

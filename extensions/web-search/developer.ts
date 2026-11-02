@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { stringEnum } from "../shared/schema.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Cause, Data, Effect, Exit } from "effect";
 import { Type } from "typebox";
@@ -444,7 +444,7 @@ export function registerDeveloperSearchTool(
         }),
       ),
       types: Type.Optional(
-        Type.Array(StringEnum(DEVELOPER_RESULT_TYPES), {
+        Type.Array(stringEnum(DEVELOPER_RESULT_TYPES), {
           description: DEVELOPER_SEARCH_PARAMETER_DESCRIPTIONS.types,
         }),
       ),

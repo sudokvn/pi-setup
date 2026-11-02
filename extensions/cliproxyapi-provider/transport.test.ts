@@ -4,12 +4,12 @@ import {
   createModels,
   InMemoryModelsStore,
   retryAssistantCall,
-  Type,
   type AssistantMessage,
   type Message,
   type SimpleStreamOptions,
   type Tool,
 } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { startMockCpa, type Reply } from "./mock-cpa.ts";
 import { createProxyProvider } from "./src/provider.ts";
 

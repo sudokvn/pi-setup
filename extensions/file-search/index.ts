@@ -15,7 +15,7 @@ import type {
 import { Text } from "@earendil-works/pi-tui";
 import { Cause, Data, Effect, Exit } from "effect";
 import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { stringEnum } from "../shared/schema.ts";
 import {
   buildFdArgs,
   buildFuzzyFdArgs,
@@ -507,7 +507,7 @@ export function fdParameters() {
       Type.String({ description: FD_PARAMETER_DESCRIPTIONS.path }),
     ),
     type: Type.Optional(
-      StringEnum(["file", "directory", "symlink"] as const, {
+      stringEnum(["file", "directory", "symlink"] as const, {
         description: FD_PARAMETER_DESCRIPTIONS.type,
       }),
     ),
@@ -547,7 +547,7 @@ export function fuzzyFindParameters() {
       Type.String({ description: FUZZY_PARAMETER_DESCRIPTIONS.path }),
     ),
     type: Type.Optional(
-      StringEnum(["file", "directory"] as const, {
+      stringEnum(["file", "directory"] as const, {
         description: FUZZY_PARAMETER_DESCRIPTIONS.type,
       }),
     ),

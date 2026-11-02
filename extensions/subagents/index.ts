@@ -23,7 +23,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { stringEnum } from "../shared/schema.ts";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -417,7 +417,7 @@ export default function (pi: ExtensionAPI) {
         description: SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS.ids,
       }),
       mode: Type.Optional(
-        StringEnum(["all", "any"] as const, {
+        stringEnum(["all", "any"] as const, {
           description: SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS.mode,
         }),
       ),
@@ -632,7 +632,7 @@ export default function (pi: ExtensionAPI) {
         description: SUBAGENT_RESUME_PARAMETER_DESCRIPTIONS.prompt,
       }),
       mode: Type.Optional(
-        StringEnum(["auto", "native", "continuation"] as const, {
+        stringEnum(["auto", "native", "continuation"] as const, {
           description: SUBAGENT_RESUME_PARAMETER_DESCRIPTIONS.mode,
         }),
       ),

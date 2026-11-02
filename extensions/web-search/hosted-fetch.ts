@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { stringEnum } from "../shared/schema.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { parsePublicHttpUrl } from "../shared/public-url.ts";
@@ -91,7 +91,7 @@ export function registerHostedFetchTool(pi: ExtensionAPI, call: CallHosted) {
         description: "Public URL to send to the hosted provider.",
       }),
       provider: Type.Optional(
-        StringEnum(["exa", "firecrawl"] as const, {
+        stringEnum(["exa", "firecrawl"] as const, {
           description:
             "Explicit provider for a targeted retry; disables automatic fallback.",
         }),

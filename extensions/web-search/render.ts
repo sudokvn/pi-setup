@@ -1,8 +1,4 @@
-import {
-  keyHint,
-  type Theme,
-  type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import type { Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import { sanitizeLine, sanitizeText } from "./sanitize.ts";
@@ -126,7 +122,12 @@ const renderResult: NonNullable<
             theme.fg(context.isError ? "error" : "muted", row),
           ),
           ...(!expanded && rows.length > 6
-            ? [truncateToWidth(keyHint("app.tools.expand", "to expand"), width)]
+            ? [
+                truncateToWidth(
+                  context.keyHint("app.tools.expand", "to expand"),
+                  width,
+                ),
+              ]
             : []),
         ];
       }
@@ -145,7 +146,7 @@ const renderResult: NonNullable<
           .slice(1, 6)
           .map((row) => truncateToWidth(theme.fg("muted", `  ${row}`), width)),
         truncateToWidth(
-          keyHint("app.tools.expand", "to expand details"),
+          context.keyHint("app.tools.expand", "to expand details"),
           width,
         ),
       ];

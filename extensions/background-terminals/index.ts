@@ -22,7 +22,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { stringEnum } from "../shared/schema.ts";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -312,7 +312,7 @@ export default function (pi: ExtensionAPI) {
         description: BG_WAIT_PARAMETER_DESCRIPTIONS.ids,
       }),
       mode: Type.Optional(
-        StringEnum(["all", "any"] as const, {
+        stringEnum(["all", "any"] as const, {
           description: BG_WAIT_PARAMETER_DESCRIPTIONS.mode,
         }),
       ),

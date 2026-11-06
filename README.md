@@ -8,7 +8,7 @@ Personal [Pi](https://pi.dev/) package based on
 Install a reviewed release globally:
 
 ```sh
-pi install git:github.com/trucke/pi-setup@v0.5.1
+pi install git:github.com/sudokvn/pi-setup@v0.5.1
 ```
 
 Pi manages the checkout and runtime dependencies. Do not clone this repository

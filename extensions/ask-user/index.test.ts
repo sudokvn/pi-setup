@@ -83,6 +83,7 @@ type TestTool = {
 };
 
 const ENTER = "\r";
+const UP = "\u001b[A";
 const DOWN = "\u001b[B";
 const LEFT = "\u001b[D";
 const ESC = "\u001b";
@@ -462,11 +463,9 @@ test("allows simple questions without context and rejects verbose context at the
 test("shows a written single-select answer when returning to its tab", async () => {
   const run = await openQuestionnaire(batch);
   run.input("3", "Something else", ENTER, LEFT);
-  assert.match(
-    run.render().join("\n"),
-    /❯ ✎ Write my own answer…\n\s+Something else/,
-  );
-  run.input(ESC);
+  assert.match(screen(run.render()), /❯ ✎ Something else/);
+  assert.doesNotMatch(screen(run.render()), /Write my own answer/);
+  run.input(ESC, ESC);
   await run.result;
 });
 
@@ -636,7 +635,7 @@ test("long options scroll inside a bounded view, keeping heading, focus and hint
   await run.result;
 });
 
-test("custom-answer cursor remains visible with long options, and Esc still returns to options", async () => {
+test("custom-answer cursor remains visible with long options, and Esc clears the draft before dismissing", async () => {
   const run = await openQuestionnaire(
     {
       ...batch,
@@ -659,7 +658,8 @@ test("custom-answer cursor remains visible with long options, and Esc still retu
   assert.match(lines.join("\n"), /My answer/);
   run.input(ESC);
   assert.equal(run.finished, false);
-  run.input("2");
+  assert.match(screen(run.render(40)), /❯ ✎ Write my own answer…/);
+  run.input(UP, ENTER);
   const result = await run.result;
   assert.equal(result.content[0].text, "User selected option 2: Large");
 });

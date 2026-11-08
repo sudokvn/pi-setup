@@ -5,7 +5,8 @@
  * - Optional, brief context appears directly above the question border
  * - 2 to 5 model-provided options per question, plus "Write my own answer"
  * - Batched questions use tabs and a final review/submit step
- * - "Write my own answer" opens an inline editor (Esc returns to the options)
+ * - "Write my own answer" is an inline text field: highlight it and type
+ *   (Esc clears a draft; on an empty field it dismisses like elsewhere)
  * - Esc on the questionnaire dismisses it without submitting partial answers
  */
 
@@ -15,9 +16,7 @@ import {
   getMarkdownTheme,
 } from "@earendil-works/pi-coding-agent";
 import {
-  CURSOR_MARKER,
-  Editor,
-  type EditorTheme,
+  Input,
   Key,
   Markdown,
   matchesKey,
@@ -43,6 +42,8 @@ const MAX_OPTIONS = 5;
 const MIN_QUESTIONS = 1;
 const MAX_CONTEXT_LENGTH = 300;
 export const MAX_QUESTIONS = 4;
+
+const CUSTOM_PLACEHOLDER = "Write my own answer…";
 
 const WAITING = {
   kind: "question",
@@ -297,25 +298,22 @@ export default function askUser(pi: ExtensionAPI) {
             const tabCount = questions.length + 1;
             const answers = new Map<number, AskUserAnswer>();
             const selections = new Map<number, Set<number>>();
-            const customAnswers = new Map<number, string>();
-            const editorTheme: EditorTheme = {
-              borderColor: (text) => theme.fg("accent", text),
-              selectList: {
-                selectedPrefix: (text) => theme.fg("accent", text),
-                selectedText: (text) => theme.fg("accent", text),
-                description: (text) => theme.fg("muted", text),
-                scrollInfo: (text) => theme.fg("dim", text),
-                noMatch: (text) => theme.fg("warning", text),
-              },
-            };
-            const editor = new Editor(tui, editorTheme);
+            // One field per question keeps each draft, cursor and undo history.
+            const customInputs = questions.map(
+              () =>
+                new Input({
+                  prompt: "",
+                  placeholder: CUSTOM_PLACEHOLDER,
+                  placeholderStyle: (text) => theme.fg("muted", text),
+                }),
+            );
             const contextView = context
               ? new Markdown(context, 0, 0, getMarkdownTheme())
               : undefined;
 
             let currentTab = 0;
             let optionIndex = 0;
-            let editMode = false;
+            let hasFocus = false;
             let cachedLines: string[] | undefined;
             let cachedWidth = 0;
             let cachedRows = 0;
@@ -355,24 +353,23 @@ export default function askUser(pi: ExtensionAPI) {
               return questions[currentTab];
             }
 
+            function customDraft(tab = currentTab) {
+              return customInputs[tab]?.getValue().trim() ?? "";
+            }
+
+            function onCustomRow() {
+              return currentOptions()[optionIndex]?.kind === "custom";
+            }
+
             function currentOptions(): DisplayOption[] {
               const question = currentQuestion();
               if (!question) return [];
-              const answer = answers.get(currentTab);
               return [
                 ...question.options.map((option) => ({
                   ...option,
                   kind: "option" as const,
                 })),
-                {
-                  label: "Write my own answer…",
-                  description: question.multiSelect
-                    ? customAnswers.get(currentTab)
-                    : answer?.wasCustom
-                      ? answer.answer
-                      : undefined,
-                  kind: "custom",
-                },
+                { label: CUSTOM_PLACEHOLDER, kind: "custom" },
                 ...(question.multiSelect
                   ? [{ label: "Done", kind: "done" as const }]
                   : []),
@@ -381,8 +378,6 @@ export default function askUser(pi: ExtensionAPI) {
 
             function selectTab(tab: number) {
               currentTab = (tab + tabCount) % tabCount;
-              editMode = false;
-              editor.setText("");
               scrollTop = 0;
 
               const existing = answers.get(currentTab);
@@ -431,23 +426,33 @@ export default function askUser(pi: ExtensionAPI) {
               );
             }
 
-            editor.onSubmit = (value) => {
-              const trimmed = value.trim();
-              editMode = false;
-              editor.setText("");
+            function submitCustom() {
               if (currentQuestion().multiSelect) {
-                if (trimmed) customAnswers.set(currentTab, trimmed);
-                else customAnswers.delete(currentTab);
-                answers.delete(currentTab);
+                // The text is already part of the selection; continue to Done.
                 optionIndex = currentOptions().length - 1;
                 refresh();
-              } else if (trimmed) {
-                saveAnswer(currentTab, trimmed, true);
-                advanceAfterAnswer();
-              } else {
-                refresh();
+                return;
               }
-            };
+              const draft = customDraft();
+              if (!draft) return;
+              saveAnswer(currentTab, draft, true);
+              advanceAfterAnswer();
+            }
+
+            function editCustom(edit: (input: Input) => void) {
+              const input = customInputs[currentTab];
+              const before = input.getValue();
+              edit(input);
+              // A committed answer that includes this text is stale once it changes.
+              const answer = answers.get(currentTab);
+              if (
+                input.getValue() !== before &&
+                (currentQuestion().multiSelect || answer?.wasCustom)
+              ) {
+                answers.delete(currentTab);
+              }
+              refresh();
+            }
 
             function toggleOption(index: number) {
               const selected = selections.get(currentTab) ?? new Set<number>();
@@ -465,7 +470,7 @@ export default function askUser(pi: ExtensionAPI) {
                   selections.get(currentTab)?.has(index),
                 )
                 .map((option) => option.label);
-              const answer = customAnswers.get(currentTab) ?? "";
+              const answer = customDraft();
               if (selected.length === 0 && !answer) return;
               answers.set(currentTab, {
                 questionIndex: currentTab,
@@ -484,15 +489,7 @@ export default function askUser(pi: ExtensionAPI) {
 
               optionIndex = index;
               if (selected.kind === "custom") {
-                editMode = true;
-                const existing = answers.get(currentTab);
-                editor.setText(
-                  currentQuestion().multiSelect
-                    ? (customAnswers.get(currentTab) ?? "")
-                    : existing?.wasCustom
-                      ? existing.answer
-                      : "",
-                );
+                // Highlighting the field is enough; typing goes straight into it.
                 refresh();
               } else if (selected.kind === "done") {
                 commitMultiAnswer();
@@ -505,26 +502,19 @@ export default function askUser(pi: ExtensionAPI) {
             }
 
             function handleInput(data: string) {
-              if (editMode) {
-                if (matchesKey(data, Key.escape)) {
-                  editMode = false;
-                  editor.setText("");
-                  refresh();
-                  return;
-                }
-                editor.handleInput(data);
-                refresh();
-                return;
-              }
-
+              // On the custom field, ←→ move the text cursor; Tab still switches tabs.
+              const typing = currentTab !== submitTab && onCustomRow();
               if (isBatch) {
-                if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
+                if (
+                  matchesKey(data, Key.tab) ||
+                  (!typing && matchesKey(data, Key.right))
+                ) {
                   selectTab(currentTab + 1);
                   return;
                 }
                 if (
                   matchesKey(data, Key.shift("tab")) ||
-                  matchesKey(data, Key.left)
+                  (!typing && matchesKey(data, Key.left))
                 ) {
                   selectTab(currentTab - 1);
                   return;
@@ -559,15 +549,26 @@ export default function askUser(pi: ExtensionAPI) {
               }
 
               const options = currentOptions();
-              if (matchesKey(data, Key.up) || data === "k") {
+              if (matchesKey(data, Key.up) || (!typing && data === "k")) {
                 optionIndex =
                   (optionIndex - 1 + options.length) % options.length;
                 refresh();
                 return;
               }
-              if (matchesKey(data, Key.down) || data === "j") {
+              if (matchesKey(data, Key.down) || (!typing && data === "j")) {
                 optionIndex = (optionIndex + 1) % options.length;
                 refresh();
+                return;
+              }
+
+              if (typing) {
+                if (matchesKey(data, Key.enter)) submitCustom();
+                else if (!matchesKey(data, Key.escape))
+                  editCustom((input) => input.handleInput(data));
+                // Esc clears a draft first, so a stray press does not discard typed text.
+                else if (customInputs[currentTab].getValue())
+                  editCustom((input) => input.setValue(""));
+                else finish(null);
                 return;
               }
 
@@ -705,24 +706,39 @@ export default function askUser(pi: ExtensionAPI) {
                   const checked =
                     option.kind === "option"
                       ? selections.get(currentTab)?.has(index)
-                      : customAnswers.has(currentTab);
+                      : customDraft() !== "";
                   const marker =
                     option.kind === "done"
                       ? "→"
                       : `${question.multiSelect ? `[${checked ? "x" : " "}] ` : ""}${option.kind === "custom" ? "✎" : `${index + 1}.`}`;
                   const indent = " ".repeat(3 + marker.length + 1);
                   const textWidth = Math.max(1, renderWidth - indent.length);
+                  const input = customInputs[currentTab];
                   const color = highlighted
                     ? "accent"
-                    : option.kind === "option"
+                    : option.kind === "option" ||
+                        (option.kind === "custom" && input.getValue())
                       ? "text"
                       : "muted";
-                  const [first = "", ...rest] = wrapTextWithAnsi(
-                    option.label,
-                    textWidth,
-                  );
+                  const label =
+                    option.kind === "custom" && input.getValue()
+                      ? input.getValue()
+                      : option.label;
+                  // The highlighted field scrolls horizontally; otherwise the draft wraps.
+                  if (option.kind === "custom" && highlighted)
+                    input.focused = hasFocus;
+                  const [first = "", ...rest] =
+                    option.kind === "custom" && highlighted
+                      ? input.render(textWidth)
+                      : wrapTextWithAnsi(label, textWidth);
+                  // Typed text reads as the user's input, not as a highlighted label;
+                  // the arrow and marker still show which row is active.
+                  const firstText =
+                    option.kind === "custom" && highlighted
+                      ? theme.fg("text", first)
+                      : theme.fg(color, first);
                   body.push(
-                    `${highlighted ? theme.fg("accent", " ❯ ") : "   "}${theme.fg(color, `${marker} ${first}`)}`,
+                    `${highlighted ? theme.fg("accent", " ❯ ") : "   "}${theme.fg(color, `${marker} `)}${firstText}`,
                   );
                   body.push(
                     ...rest.map((line) => `${indent}${theme.fg(color, line)}`),
@@ -730,7 +746,7 @@ export default function askUser(pi: ExtensionAPI) {
                   const description =
                     option.kind === "done" &&
                     !selections.get(currentTab)?.size &&
-                    !customAnswers.has(currentTab)
+                    !customDraft()
                       ? "Select at least one option or write an answer."
                       : option.description;
                   if (description) {
@@ -743,34 +759,23 @@ export default function askUser(pi: ExtensionAPI) {
                   }
                   if (highlighted) focus = [start, body.length];
                 }
-
-                if (editMode) {
-                  body.push("", theme.fg("muted", " Your answer:"));
-                  const editorLines = editor.render(
-                    Math.max(1, renderWidth - 2),
-                  );
-                  const cursorRow = editorLines.findIndex((line) =>
-                    line.includes(CURSOR_MARKER),
-                  );
-                  const focusRow =
-                    body.length +
-                    (cursorRow < 0 ? editorLines.length - 2 : cursorRow);
-                  focus = [focusRow, focusRow + 1];
-                  body.push(...editorLines.map((line) => ` ${line}`));
-                }
               }
 
               const tabHint = isBatch ? "Tab tabs • " : "";
-              let hint = editMode
-                ? ` Enter ${question?.multiSelect ? "save text" : "submit"} • Esc back to options`
+              const typing = currentTab !== submitTab && onCustomRow();
+              const escHint = customInputs[currentTab]?.getValue()
+                ? "Esc clear"
+                : "Esc dismiss";
+              let hint = typing
+                ? ` Type your answer • ${tabHint}↑↓ move • Enter ${question?.multiSelect ? "continue" : "submit"} • ${escHint}`
                 : currentTab === submitTab
                   ? " Tab/←→ navigate • Enter submit • Esc dismiss"
                   : question?.multiSelect
                     ? ` ${tabHint}↑↓ move • Space/Enter toggle • Done confirm • Esc dismiss`
                     : ` ${tabHint}↑↓/jk move • 1-${options.length} choose • Enter confirm • Esc dismiss`;
               if (visibleWidth(hint) > renderWidth) {
-                hint = editMode
-                  ? " Enter save • Esc back"
+                hint = typing
+                  ? ` Enter ${question?.multiSelect ? "continue" : "submit"} • ${escHint}`
                   : question?.multiSelect
                     ? " Space toggle • Done confirm • Esc dismiss"
                     : " Enter confirm • Esc dismiss";
@@ -832,14 +837,14 @@ export default function askUser(pi: ExtensionAPI) {
             return {
               render,
               get focused() {
-                return editor.focused;
+                return hasFocus;
               },
               set focused(value: boolean) {
-                editor.focused = value;
+                hasFocus = value;
+                cachedLines = undefined;
               },
               invalidate: () => {
                 cachedLines = undefined;
-                editor.invalidate();
                 contextView?.invalidate();
               },
               handleInput,

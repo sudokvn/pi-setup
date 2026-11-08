@@ -327,7 +327,7 @@ test("requires every batch question before submitting and preserves single-selec
   assert.equal(
     result.content[0].text,
     [
-      "User submitted these answers:",
+      "User responded:",
       "Scope: user selected option 1: Small",
       "Priority: user selected option 2: High",
     ].join("\n"),
@@ -470,6 +470,53 @@ test("shows a written single-select answer when returning to its tab", async () 
   await run.result;
 });
 
+test("free-text questions reach the model as responses, not completed decisions", async () => {
+  const cases = [
+    {
+      questions: [batch.questions[0]],
+      text: "what?",
+      keys: ["3", "what?", ENTER],
+    },
+    {
+      questions: [batch.questions[0]],
+      text: "why does this happen",
+      keys: ["3", "why does this happen", ENTER],
+    },
+    {
+      questions: [{ ...batch.questions[0], multiSelect: true }],
+      text: "Explain before proceeding",
+      keys: ["1", "3", "Explain before proceeding", ENTER, ENTER],
+    },
+    {
+      questions: batch.questions,
+      text: "what?",
+      keys: ["3", "what?", ENTER, "2", ENTER],
+    },
+  ];
+  for (const { questions, text, keys } of cases) {
+    const run = await openQuestionnaire({ questions });
+    run.input(...keys);
+    const result = await run.result;
+    const message = result.content[0].text;
+    assert.ok(message.includes(`User wrote: ${text}`));
+    assert.match(message, /question, correction, or refusal/);
+    assert.match(message, /not assume.*decision or authorization/);
+    assert.match(
+      message,
+      /Answer.*before proceeding or asking another decision question/,
+    );
+    assert.doesNotMatch(message, /their own answer|submitted these answers/);
+    assert.equal(result.details.answers[0].answer, text);
+    if (questions[0].multiSelect) {
+      assert.deepEqual(result.details.answers[0].selected, ["Small"]);
+      assert.match(message, /User selected options: "Small"/);
+    }
+    if (questions.length > 1) {
+      assert.match(message, /Priority: user selected option 2: High/);
+    }
+  }
+});
+
 test("multi-select combines checked options and custom text without advancing on a toggle", async () => {
   const run = await openQuestionnaire({
     ...batch,
@@ -484,9 +531,10 @@ test("multi-select combines checked options and custom text without advancing on
   run.input(ENTER);
 
   const result = await run.result;
-  assert.equal(
-    result.content[0].text,
-    'User selected options: "Large"\nUser wrote: Security checks',
+  assert.ok(
+    result.content[0].text.endsWith(
+      'User selected options: "Large"\nUser wrote: Security checks',
+    ),
   );
   assert.deepEqual(result.details.answers[0], {
     questionIndex: 0,

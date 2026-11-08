@@ -23,9 +23,13 @@ export const ASK_USER_TOOL_DESCRIPTION =
 export const ASK_USER_PROMPT_SNIPPET =
   "Ask the user one or up to 4 batched multiple-choice questions (2-5 options each, plus a free-form answer)";
 
-/** Guides the model to use ask-user for enumerable answers and batch independent questions. */
+const FREE_TEXT_GUIDANCE =
+  "Free-form ask-user text may be a question, correction, or refusal. Do not assume it resolves the requested decision or authorization. Answer clarification questions in plain text before proceeding or asking another decision question.";
+
+/** Guides the model to request needed decisions and interpret responses without assuming consent. */
 export const ASK_USER_PROMPT_GUIDELINES = [
-  "When asking the user a question whose likely answers can be enumerated, use the ask-user tool instead of asking in plain text.",
+  "Use ask-user when you need a decision from the user and the likely answers can be enumerated. Do not use ask-user merely to end a response or replace an explanation; answer the user's questions first.",
+  FREE_TEXT_GUIDANCE,
   "Batch independent questions into one ask-user call when that is more efficient. Ask dependent follow-up questions only after receiving the earlier answer.",
   "Questions are single-select by default. Set multiSelect to true when multiple choices are valid. Never include a free-form option yourself; ask-user adds one automatically.",
   "Keep the questionnaire brief: short questions and choices, with no reports or repeated findings. Add context only when needed to decide: one paragraph, at most 300 characters, containing the essential trade-off and your recommendation. It appears directly above the question border. Omit filler context for simple questions; put detailed explanations in normal messages.",
@@ -69,20 +73,30 @@ export function buildAskUserResultMessage(
     case "dismissed":
       return "User dismissed the questionnaire without submitting answers. Do not assume any answers; proceed accordingly or ask differently.";
     case "custom":
-      return `User wrote their own answer: ${outcome.answer}`;
+      return `${FREE_TEXT_GUIDANCE}\n\nUser wrote: ${outcome.answer}`;
     case "selected":
       return `User selected option ${outcome.index}: ${outcome.answer}`;
     case "multi":
-      return describeMultiAnswer(outcome.selected, outcome.answer);
+      return [
+        ...(outcome.answer ? [FREE_TEXT_GUIDANCE, ""] : []),
+        describeMultiAnswer(outcome.selected, outcome.answer),
+      ].join("\n");
     case "batch":
       return [
-        "User submitted these answers:",
+        ...(outcome.answers.some(
+          (answer) =>
+            (answer.wasCustom || answer.selected !== undefined) &&
+            answer.answer,
+        )
+          ? [FREE_TEXT_GUIDANCE, ""]
+          : []),
+        "User responded:",
         ...outcome.answers.map((answer) => {
           if (answer.selected !== undefined) {
             return `${answer.label}: ${describeMultiAnswer(answer.selected, answer.answer)}`;
           }
           return answer.wasCustom
-            ? `${answer.label}: user wrote: ${answer.answer}`
+            ? `${answer.label}: User wrote: ${answer.answer}`
             : `${answer.label}: user selected option ${answer.index}: ${answer.answer}`;
         }),
       ].join("\n");

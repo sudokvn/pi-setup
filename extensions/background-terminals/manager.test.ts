@@ -44,22 +44,20 @@ async function withManager(
 
 /** Resolve when the given terminal settles (via the manager's settle hook). */
 function settlement(manager: TerminalManagerShape, id: string) {
-  return new Promise<{ snap: TerminalSnapshot; consumed: boolean }>(
-    (resolve) => {
-      const existing = manager.view.get(id);
-      if (existing && existing.status !== "running") {
-        resolve({ snap: existing, consumed: false });
-        return;
+  return new Promise<{ snap: TerminalSnapshot }>((resolve) => {
+    const existing = manager.view.get(id);
+    if (existing && existing.status !== "running") {
+      resolve({ snap: existing });
+      return;
+    }
+    const unsub = manager.view.subscribeTo(id, () => {
+      const snap = manager.view.get(id);
+      if (snap && snap.status !== "running") {
+        unsub();
+        resolve({ snap });
       }
-      const unsub = manager.view.subscribeTo(id, () => {
-        const snap = manager.view.get(id);
-        if (snap && snap.status !== "running") {
-          unsub();
-          resolve({ snap, consumed: false });
-        }
-      });
-    },
-  );
+    });
+  });
 }
 
 function processGone(pid: number) {
@@ -80,12 +78,16 @@ async function pollUntil(check: () => boolean, timeoutMs = 5_000) {
   return true;
 }
 
-test("happy path: stdout and stderr captured separately, settles done, hook fires once unconsumed", async () => {
+test("happy path: stdout and stderr captured separately, settles done, hook fires once uncollected", async () => {
   await withManager(async (manager, runtime) => {
-    const settled: Array<{ id: string; status: string; consumed: boolean }> =
+    const settled: Array<{ id: string; status: string; collected: boolean }> =
       [];
-    manager.view.setOnSettled((snap, consumed) =>
-      settled.push({ id: snap.id, status: snap.status, consumed }),
+    manager.view.setOnSettled((snap) =>
+      settled.push({
+        id: snap.id,
+        status: snap.status,
+        collected: snap.collected,
+      }),
     );
 
     const snap = await runTool(
@@ -110,7 +112,7 @@ test("happy path: stdout and stderr captured separately, settles done, hook fire
     assert.equal(done.stderr.text, "err-line\n");
     assert.ok(done.settledAt);
     assert.deepEqual(settled, [
-      { id: snap.id, status: "done", consumed: false },
+      { id: snap.id, status: "done", collected: false },
     ]);
 
     // Spill files hold the full capture.
@@ -201,9 +203,9 @@ test(
 
 test("concurrent overlapping multi-id kills observe each settlement exactly once", async () => {
   await withManager(async (manager, runtime) => {
-    const settled: Array<{ id: string; consumed: boolean }> = [];
-    manager.view.setOnSettled((snap, consumed) =>
-      settled.push({ id: snap.id, consumed }),
+    const settled: Array<{ id: string; collected: boolean }> = [];
+    manager.view.setOnSettled((snap) =>
+      settled.push({ id: snap.id, collected: snap.collected }),
     );
     const [first, second] = await runTool(
       runtime,
@@ -241,8 +243,8 @@ test("concurrent overlapping multi-id kills observe each settlement exactly once
     assert.deepEqual(
       settled.sort((a, b) => a.id.localeCompare(b.id)),
       [
-        { id: first.id, consumed: true },
-        { id: second.id, consumed: true },
+        { id: first.id, collected: true },
+        { id: second.id, collected: true },
       ].sort((a, b) => a.id.localeCompare(b.id)),
     );
   });
@@ -390,12 +392,16 @@ test("concurrency cap rejects an extra start; a failed spawn releases its slot",
   });
 });
 
-test("UI requestKill settles as killed and is NOT consumed", async () => {
+test("UI requestKill settles as killed and is NOT collected", async () => {
   await withManager(async (manager, runtime) => {
-    const settled: Array<{ id: string; status: string; consumed: boolean }> =
+    const settled: Array<{ id: string; status: string; collected: boolean }> =
       [];
-    manager.view.setOnSettled((snap, consumed) =>
-      settled.push({ id: snap.id, status: snap.status, consumed }),
+    manager.view.setOnSettled((snap) =>
+      settled.push({
+        id: snap.id,
+        status: snap.status,
+        collected: snap.collected,
+      }),
     );
     const snap = await runTool(
       runtime,
@@ -409,7 +415,7 @@ test("UI requestKill settles as killed and is NOT consumed", async () => {
     const { snap: after } = await settlement(manager, snap.id);
     assert.equal(after.status, "killed");
     assert.deepEqual(settled, [
-      { id: snap.id, status: "killed", consumed: false },
+      { id: snap.id, status: "killed", collected: false },
     ]);
   });
 });
@@ -592,11 +598,11 @@ test("aborting the kill wait does not cancel the termination", async () => {
   });
 });
 
-test("wait returns settled terminals, leaves the rest running and keeps settles unconsumed", async () => {
+test("wait returns settled terminals, leaves the rest running and keeps settles uncollected", async () => {
   await withManager(async (manager, runtime) => {
-    const settled: Array<{ id: string; consumed: boolean }> = [];
-    manager.view.setOnSettled((snap, consumed) =>
-      settled.push({ id: snap.id, consumed }),
+    const settled: Array<{ id: string; collected: boolean }> = [];
+    manager.view.setOnSettled((snap) =>
+      settled.push({ id: snap.id, collected: snap.collected }),
     );
     const start = (title: string, script: string) =>
       runTool(runtime, manager.start({ command: nodeCmd(script), title, cwd }));
@@ -643,8 +649,8 @@ test("wait returns settled terminals, leaves the rest running and keeps settles 
     assert.deepEqual(
       settled.sort((a, b) => a.id.localeCompare(b.id)),
       [
-        { id: quick.id, consumed: false },
-        { id: other.id, consumed: false },
+        { id: quick.id, collected: false },
+        { id: other.id, collected: false },
       ],
     );
   });

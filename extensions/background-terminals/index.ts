@@ -4,16 +4,18 @@
  *
  * Tools (for the LLM):
  * - bg-start: fire-and-forget spawn (command, title, working_dir). Max 8
- *   running at once. The model is notified exactly once when a process exits.
+ *   running at once.
  * - bg-status: peek at one terminal's status + tail-truncated output.
- * - bg-wait: block until all/any listed terminals exit (optional timeout);
- *   returns their results, which are then not delivered again on exit.
+ * - bg-wait: block until all/any listed terminals exit (optional timeout)
+ *   and return their results.
  * - bg-list: list all tracked terminals (running and settled).
  * - bg-kill: SIGTERM→SIGKILL the whole process tree; returns final state.
  *
- * While ≥1 process runs, a one-line widget above the editor shows
- * "N background terminal(s) running • /ps to view". `/ps` opens a two-stage
- * full-screen overlay (list → read-only detail with stdout/stderr toggle).
+ * Results are pull-only: an exit never writes into the conversation or starts
+ * a turn. A one-line widget above the editor counts running terminals and
+ * exit results the model has not collected with bg-wait, bg-status or
+ * bg-kill; `c`/`C` in /ps clear them. `/ps` opens a two-stage full-screen
+ * overlay (list → read-only detail with stdout/stderr toggle).
  *
  * Architecture: Effect v4 core (manager service behind one ManagedRuntime);
  * this file is the async boundary where tool handlers run effects via
@@ -27,6 +29,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   ExtensionUIContext,
+  Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
   getMarkdownTheme,
@@ -34,7 +37,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Key, Markdown, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import type { TerminalSnapshot } from "./src/domain.ts";
 import { TerminalManager, type TerminalManagerShape } from "./src/manager.ts";
 import {
   BG_KILL_PARAMETER_DESCRIPTIONS,
@@ -51,12 +53,10 @@ import {
   buildKillReport,
   buildStartResult,
   buildStatusResult,
-  buildTerminalResultMessage,
   buildWaitResult,
   describeTerminal,
   longBashBlockReason,
 } from "./src/prompt.ts";
-import { createDeferredResultDelivery } from "./src/result-delivery.ts";
 import {
   createTerminalRuntime,
   runTool,
@@ -67,13 +67,29 @@ import { openTerminalPicker } from "./src/ui/ps.ts";
 
 const WIDGET_KEY = "background-terminals";
 
+function formatWidget(
+  theme: Theme,
+  counts: { running: number; ready: number; failed: number },
+) {
+  const parts = [
+    counts.running > 0 && theme.fg("warning", `■ ${counts.running} running`),
+    counts.ready > 0 && theme.fg("success", `■ ${counts.ready} ready`),
+    counts.failed > 0 && theme.fg("error", `■ ${counts.failed} failed`),
+  ].filter((part) => part !== false);
+  return (
+    theme.fg("text", "background terminals: ") +
+    parts.join(theme.fg("dim", " · ")) +
+    theme.fg("dim", " • ") +
+    theme.fg("accent", "/ps") +
+    theme.fg("dim", " to view")
+  );
+}
+
 export default function (pi: ExtensionAPI) {
   let runtime: TerminalRuntime | undefined;
   let managerPromise: Promise<TerminalManagerShape> | undefined;
-  let sessionContext: ExtensionContext | undefined;
   let ui: ExtensionUIContext | undefined;
   let unsubStatus: (() => void) | undefined;
-  const resultDelivery = createDeferredResultDelivery<TerminalSnapshot>();
 
   const getRuntime = () => (runtime ??= createTerminalRuntime());
 
@@ -82,7 +98,6 @@ export default function (pi: ExtensionAPI) {
     managerPromise ??= getRuntime()
       .runPromise(TerminalManager)
       .then((manager) => {
-        manager.view.setOnSettled(onSettled);
         unsubStatus?.();
         unsubStatus = manager.view.subscribe(() => updateWidget(manager));
         updateWidget(manager);
@@ -91,34 +106,33 @@ export default function (pi: ExtensionAPI) {
     return managerPromise;
   };
 
-  /** One-line widget directly above the editor, only while ≥1 is running.
-   * Called on every manager notification (including per-output-chunk), so it
-   * only touches setWidget when the running count actually changes —
-   * replacing the widget factory hundreds of times a second would churn
-   * component creation for no visible difference. */
-  let widgetRunning = 0;
+  /** One-line widget directly above the editor while terminals run or exit
+   * results await collection. Called on every manager notification
+   * (including per-output-chunk), so it only touches setWidget when the
+   * counts actually change — replacing the widget factory hundreds of times
+   * a second would churn component creation for no visible difference. */
+  let widgetKey = "";
   const updateWidget = (manager: TerminalManagerShape) => {
     if (!ui) return;
     try {
-      const running = manager.view
-        .list()
-        .filter((snap) => snap.status === "running").length;
-      if (running === widgetRunning) return;
-      widgetRunning = running;
-      if (running === 0) {
+      const terminals = manager.view.list();
+      const running = terminals.filter(
+        (snap) => snap.status === "running",
+      ).length;
+      const awaiting = terminals.filter(
+        (snap) => snap.status !== "running" && !snap.collected,
+      );
+      const failed = awaiting.filter((snap) => snap.status === "failed").length;
+      const ready = awaiting.length - failed;
+      const key = `${running}/${ready}/${failed}`;
+      if (key === widgetKey) return;
+      widgetKey = key;
+      if (running + ready + failed === 0) {
         ui.setWidget(WIDGET_KEY, undefined);
         return;
       }
       ui.setWidget(WIDGET_KEY, (_tui, theme) => {
-        const line =
-          theme.fg("warning", "■ ") +
-          theme.fg(
-            "text",
-            `${running} background terminal${running === 1 ? "" : "s"} running`,
-          ) +
-          theme.fg("dim", " • ") +
-          theme.fg("accent", "/ps") +
-          theme.fg("dim", " to view");
+        const line = formatWidget(theme, { running, ready, failed });
         return { render: () => [line], invalidate: () => {} };
       });
     } catch {
@@ -126,67 +140,9 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  const deliverResult = (snap: TerminalSnapshot) => {
-    try {
-      pi.sendMessage(
-        {
-          customType: "background-terminal-result",
-          content: buildTerminalResultMessage(snap),
-          display: true,
-          details: {
-            id: snap.id,
-            title: snap.title,
-            status: snap.status,
-            exitCode: snap.exitCode,
-            signal: snap.signal,
-          },
-        },
-        // followUp: queued until the agent has no more tool calls — never
-        // interrupts a mid-turn stream. triggerTurn: wakes the model
-        // immediately iff idle; if busy, the queued follow-up is delivered
-        // when the current run settles. Either way exactly one delivery.
-        { deliverAs: "followUp", triggerTurn: true },
-      );
-      return true;
-    } catch (error) {
-      // Session may be shutting down, but retain the snapshot so any later
-      // agent-settled flush can retry instead of silently dropping it.
-      console.error("background-terminals: failed to deliver result", error);
-      return false;
-    }
-  };
-
-  const flushResults = () => {
-    for (const snap of resultDelivery.drain()) {
-      if (!deliverResult(snap)) resultDelivery.defer(snap);
-    }
-  };
-
-  const onSettled = (snap: TerminalSnapshot, consumed: boolean) => {
-    if (consumed) {
-      // An in-flight bg-kill is returning this settlement itself.
-      resultDelivery.consume([snap.id]);
-      return;
-    }
-    // Defer a deep-enough copy: the live snapshot's output views keep
-    // mutating (late flushes) after settle.
-    resultDelivery.defer({
-      ...snap,
-      stdout: { ...snap.stdout },
-      stderr: { ...snap.stderr },
-    });
-    if (sessionContext?.isIdle()) flushResults();
-  };
-
   pi.on("session_start", (_event, ctx) => {
-    sessionContext = ctx;
     if (ctx.hasUI) ui = ctx.ui;
   });
-
-  // Drain deferred results when the agent settles: together with the
-  // isIdle() fast path above and the Map-keyed delivery (drain clears),
-  // double delivery is structurally impossible — whoever drains first wins.
-  pi.on("agent_settled", flushResults);
 
   // /new, /resume, /fork, /reload, and quit all emit session_shutdown for
   // the old extension instance. Processes never survive a session
@@ -194,8 +150,6 @@ export default function (pi: ExtensionAPI) {
   // disposeAll → every entry scope → SIGTERM→SIGKILL tree kill, each close
   // bounded so a wedged process cannot hang shutdown.
   pi.on("session_shutdown", async () => {
-    sessionContext = undefined;
-    resultDelivery.clear();
     unsubStatus?.();
     unsubStatus = undefined;
     try {
@@ -203,7 +157,7 @@ export default function (pi: ExtensionAPI) {
     } catch {
       // UI may already be gone.
     }
-    widgetRunning = 0;
+    widgetKey = "";
     ui = undefined;
     const closing = runtime;
     runtime = undefined;
@@ -284,9 +238,8 @@ export default function (pi: ExtensionAPI) {
         );
       }
 
-      // This status is returning the settlement itself; a pending automatic
-      // follow-up for the same settle would be a duplicate.
-      if (snap.status !== "running") resultDelivery.consume([snap.id]);
+      // Returning a settled terminal's final state collects it.
+      manager.view.collect([snap.id]);
 
       return {
         content: [{ type: "text", text: buildStatusResult(snap) }],
@@ -354,9 +307,7 @@ export default function (pi: ExtensionAPI) {
         { signal, interruptMessage: "Wait aborted. Terminals keep running." },
       );
 
-      // This wait returns these settlements itself; their pending automatic
-      // follow-ups would be duplicates. Terminals still running keep theirs.
-      resultDelivery.consume(result.settled.map((snap) => snap.id));
+      manager.view.collect(result.settled.map((snap) => snap.id));
 
       return {
         content: [{ type: "text", text: buildWaitResult(result) }],
@@ -431,10 +382,9 @@ export default function (pi: ExtensionAPI) {
           "Kill wait aborted; termination continues in the background.",
       });
 
-      // Settlement may have happened before this kill began (or during it,
-      // via the killInterest consumed flag). Remove any deferred automatic
-      // delivery now that this tool returns the final state itself.
-      resultDelivery.consume(ids);
+      // The report returns each terminal's final state, including ones that
+      // settled before this kill began.
+      manager.view.collect(ids);
 
       return {
         content: [{ type: "text", text: buildKillReport(report) }],
@@ -451,6 +401,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   // --- Result message rendering ------------------------------------------
+
+  // Earlier releases pushed exit results as custom messages; keep rendering
+  // them in existing sessions.
 
   pi.registerMessageRenderer(
     "background-terminal-result",

@@ -13,9 +13,9 @@ import { MAX_RUNNING, type KillResult, type WaitResult } from "./manager.ts";
 export const STATUS_STDOUT_MAX = 16 * 1024;
 /** bg-status stderr tail. */
 export const STATUS_STDERR_MAX = 8 * 1024;
-/** Completion follow-up stdout tail. Keep this concise; /ps has the detailed view. */
+/** Per-terminal bg-wait stdout tail. Keep this concise; /ps has the detailed view. */
 export const RESULT_STDOUT_MAX = 8 * 1024;
-/** Completion follow-up stderr tail. Keep this concise; /ps has the detailed view. */
+/** Per-terminal bg-wait stderr tail. Keep this concise; /ps has the detailed view. */
 export const RESULT_STDERR_MAX = 4 * 1024;
 const STATUS_STDOUT_MAX_LINES = 400;
 const STATUS_STDERR_MAX_LINES = 200;
@@ -33,26 +33,26 @@ export function longBashBlockReason(
   if (timeout === undefined || timeout <= MAX_BASH_TIMEOUT_SECONDS) return;
   return (
     `bash timeout ${timeout}s exceeds ${MAX_BASH_TIMEOUT_SECONDS}s and would block the session. ` +
-    "Run this command with bg-start instead; you will be notified with its output when it exits, or call bg-wait if you need it before continuing. " +
+    "Run this command with bg-start instead and collect its output with bg-wait when you need it. " +
     `If it reliably finishes sooner, retry bash with a timeout of at most ${MAX_BASH_TIMEOUT_SECONDS}s.`
   );
 }
 
 export const BG_START_TOOL_DESCRIPTION =
   "Start a long-running shell command as a background terminal (executed via the platform shell — sh -c on POSIX, cmd.exe /d /s /c on Windows). " +
-  "Fire-and-forget: this returns immediately with an id, and you get a message with the final output when the process exits. Use bg-wait when you need that output before continuing. " +
+  "Fire-and-forget: this returns immediately with an id. Exit results are never pushed to you; collect them with bg-wait (or bg-status) when you need them. " +
   "The process receives NO stdin (immediate EOF) and there is no way to send input later — interactive commands will not work; use bg-kill to stop a stuck one. " +
   `Terminals are session-scoped: they are killed when the session ends or reloads. Output shown to you is tail-truncated (stdout ${formatSize(STATUS_STDOUT_MAX)}, stderr ${formatSize(STATUS_STDERR_MAX)}); the full logs are captured to files and in the /ps viewer. ` +
   `Max ${MAX_RUNNING} background terminals can run at once.`;
 
 export const BG_START_PROMPT_SNIPPET =
-  "Run a long-lived shell command in the background (dev servers, builds, watchers); output is captured and you're notified on exit";
+  "Run a long-lived shell command in the background (dev servers, builds, watchers); collect its output with bg-wait";
 
 export const BG_START_PROMPT_GUIDELINES = [
   "Use bg-start for commands expected to run long or indefinitely (servers, watch modes, long builds); use the regular bash tool for quick commands.",
   `Also use bg-start for commands that wait on something else to finish (CI watchers, agent or job waits, sleep or poll loops). bash calls with a timeout above ${MAX_BASH_TIMEOUT_SECONDS}s are rejected.`,
   "bg-start processes receive no stdin — never start a command that requires interactive input.",
-  "After bg-start, keep working; the exit result arrives automatically. When you cannot continue without it, call bg-wait instead of polling with sleep or reading the terminal's log files. Use bg-status to peek at current output.",
+  "After bg-start, keep working. Exit results are not delivered automatically: call bg-wait when progress or your answer depends on them, instead of polling with sleep or reading the terminal's log files. Use bg-status to peek at current output.",
 ];
 
 export const BG_START_PARAMETER_DESCRIPTIONS = {
@@ -70,7 +70,7 @@ export const BG_STATUS_PARAMETER_DESCRIPTIONS = {
 };
 
 export const BG_WAIT_TOOL_DESCRIPTION =
-  'Wait until all or any listed background terminals exit, then return their final output. Waited-for results are not sent again as exit messages. An optional timeout stops waiting without stopping the terminals. Defaults to mode "all" and no timeout.';
+  'Wait until all or any listed background terminals exit, then return their final output. An optional timeout stops waiting without stopping the terminals. Defaults to mode "all" and no timeout.';
 
 export const BG_WAIT_PARAMETER_DESCRIPTIONS = {
   ids: 'Terminal ids, e.g. ["bt-1", "bt-2"]',
@@ -92,8 +92,8 @@ export const BG_KILL_PARAMETER_DESCRIPTIONS = {
 export function buildStartResult(snap: TerminalSnapshot) {
   return (
     `Started background terminal ${snap.id} "${snap.title}" (pid ${snap.pid ?? "?"}, ${snap.cwd}).\n` +
-    `It runs in the background with no stdin. You'll get a message when it exits, ` +
-    `or use bg-wait to block until it does, bg-status(id: "${snap.id}") to peek, bg-kill to stop it, bg-list to see all.`
+    `It runs in the background with no stdin. Use bg-wait to collect its result when you need it, ` +
+    `bg-status(id: "${snap.id}") to peek, bg-kill to stop it, bg-list to see all.`
   );
 }
 
@@ -140,7 +140,7 @@ export function buildStatusResult(snap: TerminalSnapshot) {
   return text;
 }
 
-/** The async completion follow-up injected into the model's context. */
+/** One settled terminal's final state, as returned by bg-wait. */
 export function buildTerminalResultMessage(snap: TerminalSnapshot) {
   const how =
     snap.status === "killed" ? "was killed" : `exited (${formatExit(snap)})`;
@@ -160,7 +160,7 @@ export function buildWaitResult(result: WaitResult) {
     sections.push(
       result.timedOut
         ? `Wait timed out. ${still} Nothing was stopped.`
-        : `${still} Their results arrive automatically when they exit.`,
+        : `${still} Collect their results with bg-wait when you need them.`,
     );
   }
   return sections.join("\n\n---\n\n");

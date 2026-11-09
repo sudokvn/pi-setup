@@ -69,6 +69,7 @@ function boundedError(error: unknown) {
  * stdout/stderr are getters over the live OutputBuffers. */
 interface MutableSnapshot extends TerminalSnapshot {
   status: TerminalStatus;
+  collected: boolean;
   pid?: number;
   settledAt?: number;
   exitCode?: number;
@@ -145,16 +146,13 @@ export interface TerminalReadModel {
   subscribe(listener: () => void): () => void;
   /** Per-terminal notification (/ps detail view). */
   subscribeTo(id: string, listener: () => void): () => void;
-  /** Fire-and-forget kill (dashboard/detail `x`). Not marked consumed: the
-   * settle still flows back to the model as a follow-up message. */
+  /** Fire-and-forget kill (dashboard/detail `x`). Unlike bg-kill, the result
+   * still awaits collection by the model. */
   requestKill(id: string): void;
-  /**
-   * Register the settle hook. `consumed` is true when an active bg-kill is
-   * collecting the result (so it must not also be delivered as a follow-up).
-   */
-  setOnSettled(
-    hook: ((snap: TerminalSnapshot, consumed: boolean) => void) | undefined,
-  ): void;
+  /** Mark settled results as collected so the widget stops counting them. */
+  collect(ids: Iterable<string>): void;
+  /** Register the settle hook, called once per terminal after it settles. */
+  setOnSettled(hook: ((snap: TerminalSnapshot) => void) | undefined): void;
 }
 
 // --- Service --------------------------------------------------------------------
@@ -302,7 +300,7 @@ const makeManager = Effect.gen(function* () {
     string,
     Pick<KillResult, "title" | "status" | "exit">
   >();
-  /** ids with an in-flight kill() collecting the result (settle → consumed). */
+  /** ids with an in-flight kill() collecting the result (settle → collected). */
   const killInterest = new Map<string, number>();
   const listeners = new Set<() => void>();
   const idListeners = new Map<string, Set<() => void>>();
@@ -310,8 +308,7 @@ const makeManager = Effect.gen(function* () {
   let reserved = 0;
   let disposed = false;
   let spillDir: string | undefined | null;
-  let onSettled:
-    ((snap: TerminalSnapshot, consumed: boolean) => void) | undefined;
+  let onSettled: ((snap: TerminalSnapshot) => void) | undefined;
 
   const notify = (id?: string) => {
     for (const listener of [...listeners]) {
@@ -424,14 +421,13 @@ const makeManager = Effect.gen(function* () {
       settledHistory.delete(oldest);
     }
     // Completing the Deferred can immediately resume kill waiters, whose
-    // ensuring blocks release interest. Snapshot consumption first so the
-    // settle hook observes the interest that existed when settlement won.
-    const consumed = (killInterest.get(s.id) ?? 0) > 0;
+    // ensuring blocks release interest. Read it first: a bg-kill in flight
+    // reports this result itself, so it needs no collection.
+    s.collected = (killInterest.get(s.id) ?? 0) > 0;
     Deferred.doneUnsafe(entry.settled, Effect.void);
     notify(s.id);
     try {
-      // During teardown, don't queue results into a shutting-down session.
-      if (!disposed) onSettled?.(s, consumed);
+      if (!disposed) onSettled?.(s);
     } catch {
       // The parent session may be unavailable; settlement stays final.
     }
@@ -609,6 +605,7 @@ const makeManager = Effect.gen(function* () {
           cwd: options.cwd,
           pid: child.pid,
           status: "running",
+          collected: false,
           createdAt: Date.now(),
           get stdout() {
             return stdoutBuf.view();
@@ -798,8 +795,8 @@ const makeManager = Effect.gen(function* () {
         (entry) => entry.snapshot.status === "running",
       );
       const runningIds = running.map((entry) => entry.snapshot.id);
-      // Mark consumed before signaling so this kill's settlements are not
-      // ALSO queued as automatic follow-up messages to the model.
+      // Register interest before signaling so this kill's settlements are
+      // marked collected: the kill report returns them itself.
       addKillInterest(runningIds);
       const work = Effect.gen(function* () {
         yield* Effect.forEach(running, killEntry, {
@@ -844,10 +841,9 @@ const makeManager = Effect.gen(function* () {
       );
     });
 
-  // Settlements still reach the settle hook as unconsumed: the tool retracts
-  // the follow-ups for exactly the ids it returns. Pre-marking them consumed
-  // would lose a result that settles after the snapshot below, or during a
-  // wait the user aborts.
+  // Settlements stay uncollected here: the tool collects exactly the ids it
+  // returns. Pre-marking them collected would lose a result that settles
+  // after the snapshot below, or during a wait the user aborts.
   const wait = (
     ids: ReadonlyArray<string>,
     mode: WaitMode,
@@ -937,9 +933,18 @@ const makeManager = Effect.gen(function* () {
     requestKill: (id) => {
       const entry = entries.get(id);
       if (!entry) return;
-      // UI-initiated kills are not "consumed": the killed result still flows
-      // back to the model as a follow-up message (subagents precedent).
+      // UI-initiated kills stay uncollected, like subagents' `x` abort: the
+      // model has not seen the result yet.
       runCleanup(killEntry(entry).pipe(Effect.ignore));
+    },
+    collect: (ids) => {
+      for (const id of ids) {
+        const snapshot = entries.get(id)?.snapshot;
+        if (!snapshot || snapshot.status === "running") continue;
+        if (snapshot.collected) continue;
+        snapshot.collected = true;
+        notify(id);
+      }
     },
     setOnSettled: (hook) => {
       onSettled = hook;

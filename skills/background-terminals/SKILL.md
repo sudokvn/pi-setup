@@ -17,14 +17,14 @@ Call `bg-start` with:
 
 Background commands receive no stdin. Never use them for interactive prompts.
 
-After starting, continue useful work instead of polling. The terminal sends one completion message when it exits.
+After starting, continue useful work instead of polling. Exit results are never pushed into the conversation; collect them with `bg-wait` when progress or your answer depends on them. Until then the widget above the editor counts them as ready or failed.
 
 ## Wait, inspect and stop
 
-- Use `bg-wait` when you cannot continue without the result. It returns the final output, and that terminal then sends no completion message. Never poll with `sleep` or read the log files directly.
+- Use `bg-wait` when you cannot continue without the result. It returns the final output. Never poll with `sleep` or read the log files directly.
 - Use `bg-status` only when current output or status is needed.
 - Use `bg-list` to inventory all tracked terminals.
 - Use `bg-kill` when a process is no longer needed or is stuck; termination continues even if the tool wait is aborted.
 - Tell the user they can open `/ps` to inspect live output and kill terminals interactively.
 
-Prefer meaningful titles and avoid starting duplicate servers or watchers. Full output is captured to spill files; tool and completion output shows a concise tail. Terminals are session-scoped and are stopped during shutdown or reload.
+Prefer meaningful titles and avoid starting duplicate servers or watchers. Full output is captured to spill files; tool output shows a concise tail. Terminals are session-scoped and are stopped during shutdown or reload.

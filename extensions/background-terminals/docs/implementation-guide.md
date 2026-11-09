@@ -23,11 +23,12 @@ the key simplification vs. subagents' `send()`).
 - Full stdout and stderr are captured **separately and completely** in private spill files;
   bounded in-memory tails keep `/ps` responsive (§7.4).
 - Tool responses to the model are **always truncated** with the pi truncation utilities.
-- When a process exits, the model is woken **exactly once** via `pi.sendMessage(...,
-  { deliverAs: "followUp", triggerTurn: true })` — no polling — using the same
-  deferred-delivery/consumed dance as subagents (§9).
-- While ≥1 process is running, a one-line widget renders **directly above the editor**:
-  `N background terminal(s) running • /ps to view` (§10).
+- Exit results are **pull-only** (superseding the original §9 design): an exit never writes
+  into the conversation or starts a turn. `bg-wait`, `bg-status` and `bg-kill` collect
+  results; `c`/`C` in `/ps` clear them.
+- A one-line widget renders **directly above the editor** while terminals run or exit
+  results await collection: `background terminals: ■ 1 running · ■ 2 ready · ■ 1 failed •
+  /ps to view` (§10).
 - `/ps` opens a two-stage full-screen overlay (list → detail with scrollable stdout/stderr),
   modeled on `extensions/subagents/src/ui/takeover.ts` (§11).
 
@@ -560,6 +561,13 @@ it returns, as subagent-wait does. Results settling after the snapshot, or durin
 wait, are still delivered.
 
 ## 9. Completion notification — exactly once, no polling, no turn races
+
+> **Superseded.** Pushing exit results with `followUp` + `triggerTurn` interrupted the user
+> and repeated results the model had already used. Results are now pull-only: settle sets
+> `snapshot.collected` (true only when an in-flight `bg-kill` reports the result), the tools
+> and `/ps` call `view.collect`, and the widget counts settled, uncollected terminals.
+> `result-delivery.ts` and the `agent_settled` flush are gone. The rest of this section is
+> kept as the original rationale.
 
 This is the subtlest requirement. Copy the subagents solution wholesale; it exists precisely
 to solve this problem (see comments in `extensions/subagents/index.ts` lines 168–222 and

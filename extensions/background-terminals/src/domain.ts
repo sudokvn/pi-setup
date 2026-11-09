@@ -36,6 +36,11 @@ export interface TerminalSnapshot {
   /** Undefined only if spawn itself failed before a pid was assigned. */
   readonly pid?: number;
   readonly status: TerminalStatus;
+  /**
+   * False while a settled result awaits the parent: the widget counts it
+   * until a tool collects it or the user clears it in /ps.
+   */
+  readonly collected: boolean;
   /** Date.now() at spawn. */
   readonly createdAt: number;
   /** Date.now() at settle (exit/kill). */

@@ -206,6 +206,16 @@ class TerminalDashboard implements Component {
       if (snap && snap.status === "running") this.view.requestKill(snap.id);
       return;
     }
+    // Clearing only stops the widget counting a result; it stays listed.
+    if (data === "c") {
+      const snap = terminals[this.selection.index];
+      if (snap) this.view.collect([snap.id]);
+      return;
+    }
+    if (data === "C") {
+      this.view.collect(terminals.map((snap) => snap.id));
+      return;
+    }
   }
 
   private pad(text: string, width: number): string {
@@ -287,7 +297,7 @@ class TerminalDashboard implements Component {
       truncateToWidth(
         theme.fg(
           "dim",
-          `  ${configuredKeys(this.keybindings, "tui.select.up")}/${configuredKeys(this.keybindings, "tui.select.down")}/jk select · ${configuredKeys(this.keybindings, "tui.select.confirm")} inspect · x kill · ${configuredKeys(this.keybindings, "tui.select.cancel")} close`,
+          `  ${configuredKeys(this.keybindings, "tui.select.up")}/${configuredKeys(this.keybindings, "tui.select.down")}/jk select · ${configuredKeys(this.keybindings, "tui.select.confirm")} inspect · x kill · c/C clear one/all from widget · ${configuredKeys(this.keybindings, "tui.select.cancel")} close`,
         ),
         width,
       ),

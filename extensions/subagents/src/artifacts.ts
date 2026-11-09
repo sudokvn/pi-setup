@@ -257,6 +257,8 @@ function isSnapshot(value: unknown): value is SubagentSnapshot {
       candidate.status === "done" ||
       candidate.status === "failed" ||
       candidate.status === "cancelled") &&
+    (candidate.collected === undefined ||
+      typeof candidate.collected === "boolean") &&
     Array.isArray(candidate.transcript) &&
     candidate.transcript.every(isTranscriptItem) &&
     !!candidate.meta &&
@@ -293,6 +295,9 @@ export function recoverPersistedSnapshot(snapshot: SubagentSnapshot) {
   const provisional = {
     ...snapshot,
     status: "cancelled" as const,
+    // Cut off by the parent ending, like a clean shutdown: resumable, not a
+    // result awaiting collection.
+    collected: true,
     errorText: "Parent session ended before the run settled.",
     settledAt: Date.now(),
     lastEvent: "Recovered" as const,
@@ -325,7 +330,13 @@ export function loadPersistedSnapshots() {
         fs.readFileSync(artifacts.snapshot, "utf8"),
       );
       if (!isSnapshot(parsed)) continue;
-      loaded.push({ ...parsed, artifacts });
+      // Receipts from before the flag existed were already delivered into
+      // the conversation, so they never count as awaiting collection.
+      loaded.push({
+        ...parsed,
+        collected: parsed.collected ?? true,
+        artifacts,
+      });
     } catch {
       // Ignore incomplete or incompatible artifacts. A bad receipt must not
       // prevent the extension from loading other recoverable runs.

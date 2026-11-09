@@ -93,10 +93,8 @@ async function withManager(
 
 test("stub subagent completes and delivers a final result", async () => {
   await withManager(async (manager, runtime) => {
-    const settled: Array<{ id: string; consumed: boolean }> = [];
-    manager.view.setOnSettled((snap, consumed) =>
-      settled.push({ id: snap.id, consumed }),
-    );
+    const settled: string[] = [];
+    manager.view.setOnSettled((snap) => settled.push(snap.id));
 
     const snap = await runTool(
       runtime,
@@ -113,9 +111,10 @@ test("stub subagent completes and delivers a final result", async () => {
       done.finalText,
       /\[stub:claude\] completed: Say hello to the tests/,
     );
-    // Wait results are deferred first and retracted by the tool after capture;
+    // Wait results settle as uncollected and the tool collects them after capture;
     // pre-consuming them here would create timeout/interruption races.
-    assert.deepEqual(settled, [{ id: snap.id, consumed: false }]);
+    assert.deepEqual(settled, [snap.id]);
+    assert.equal(done.collected, false);
 
     // Durable artifacts hold prompts and output: they must stay private.
     assert.ok(fs.existsSync(done.artifacts.receipt));

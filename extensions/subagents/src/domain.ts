@@ -230,6 +230,11 @@ export interface SubagentSnapshot {
   readonly parentCwd: string;
   readonly parentSessionId?: string;
   readonly status: SubagentStatus;
+  /**
+   * False while a settled result awaits the parent: the footer counts it
+   * until the parent agent collects it or the user clears it.
+   */
+  readonly collected: boolean;
   readonly startedAt: number;
   readonly lastActivityAt: number;
   readonly lastEvent: SubagentEvent["_tag"] | "Recovered";

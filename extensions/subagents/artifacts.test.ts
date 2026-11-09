@@ -8,6 +8,7 @@ import {
   loadPersistedSnapshots,
   persistSnapshot,
   pruneArtifacts,
+  recoverPersistedSnapshot,
 } from "./src/artifacts.ts";
 import type { SubagentSnapshot } from "./src/domain.ts";
 
@@ -34,6 +35,7 @@ function snapshot(
     cwd: root,
     parentCwd: root,
     status,
+    collected: false,
     startedAt: lastActivityAt - 1,
     lastActivityAt,
     lastEvent: status === "running" ? "RunStarted" : "RunSettled",
@@ -113,4 +115,12 @@ test("retention never removes active run artifacts", () => {
   assert.ok(fs.existsSync(active.artifacts.snapshot));
   assert.ok(fs.existsSync(newSettled.artifacts.snapshot));
   assert.equal(fs.existsSync(oldSettled.artifacts.directory), false);
+});
+
+test("a run the parent never settled recovers as interrupted, not awaiting collection", () => {
+  const recovered = recoverPersistedSnapshot(
+    snapshot("sa-crashed", "running", Date.now()),
+  );
+  assert.equal(recovered.status, "cancelled");
+  assert.equal(recovered.collected, true);
 });

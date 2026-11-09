@@ -48,6 +48,8 @@ export function formatContextUtilization(usage: ContextUtilization) {
 
 interface ActivityCounts {
   running: number;
+  /** Finished or cancelled results the parent has not collected yet. */
+  ready: number;
   failed: number;
 }
 
@@ -57,6 +59,9 @@ export function formatActivityStatus(theme: Theme, counts: ActivityCounts) {
   const parts: string[] = [];
   if (counts.running > 0) {
     parts.push(theme.fg("warning", `${SQUARE} ${counts.running} running`));
+  }
+  if (counts.ready > 0) {
+    parts.push(theme.fg("success", `${SQUARE} ${counts.ready} ready`));
   }
   if (counts.failed > 0) {
     parts.push(theme.fg("error", `${SQUARE} ${counts.failed} failed`));

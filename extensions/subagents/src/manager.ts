@@ -75,6 +75,7 @@ interface MutableSnapshot {
   parentCwd: string;
   parentSessionId?: string;
   status: SubagentStatus;
+  collected: boolean;
   startedAt: number;
   lastActivityAt: number;
   lastEvent: SubagentSnapshot["lastEvent"];
@@ -125,9 +126,9 @@ export interface SubagentReadModel {
   subscribeTo(id: string, listener: () => void): () => void;
   requestSend(id: string, text: string): void;
   requestAbort(id: string): void;
-  setOnSettled(
-    hook: ((snap: SubagentSnapshot, consumed: boolean) => void) | undefined,
-  ): void;
+  /** Mark settled results as collected so the footer stops counting them. */
+  collect(ids: Iterable<string>): void;
+  setOnSettled(hook: ((snap: SubagentSnapshot) => void) | undefined): void;
 }
 
 export interface CancelResult {
@@ -209,8 +210,7 @@ const makeManager = Effect.gen(function* () {
   const cleanups = new Set<Fiber.Fiber<unknown>>();
   let reserved = 0;
   let disposed = false;
-  let onSettled:
-    ((snap: SubagentSnapshot, consumed: boolean) => void) | undefined;
+  let onSettled: ((snap: SubagentSnapshot) => void) | undefined;
 
   const notify = (id?: string) => {
     changeVersion++;
@@ -409,12 +409,13 @@ const makeManager = Effect.gen(function* () {
     snapshot.liveTools = [];
     snapshot.currentTools = [];
     snapshot.queued = [];
+    // subagent-cancel reports the runs it stops, so they need no collection.
+    snapshot.collected = (waitInterest.get(snapshot.id) ?? 0) > 0;
     persistNow(entry);
     pruneArtifacts(MAX_TRACKED);
-    const consumed = (waitInterest.get(snapshot.id) ?? 0) > 0;
     notify(snapshot.id);
     try {
-      if (!disposed) onSettled?.(snapshot, consumed);
+      if (!disposed) onSettled?.(snapshot);
     } catch {
       // The parent session may already be unavailable.
     }
@@ -687,6 +688,7 @@ const makeManager = Effect.gen(function* () {
             parentCwd: task.parent.parentCwd,
             parentSessionId: task.parent.parentSessionId,
             status: "running",
+            collected: false,
             startedAt: now,
             lastActivityAt: now,
             lastEvent: "RunStarted",
@@ -960,10 +962,10 @@ const makeManager = Effect.gen(function* () {
       const unique = [...new Set(ids)];
       const deadline =
         timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
-      // Results settle into the deferred-delivery buffer and the tool retracts
-      // only the ids returned here. Pre-marking candidates consumed would lose
-      // a result that settles between snapshot capture and waiter cleanup,
-      // especially on timeout or interruption. Retention interest is separate.
+      // Results settle as uncollected and the tool collects only the ids
+      // returned here. Pre-marking candidates consumed would lose a result
+      // that settles between snapshot capture and waiter cleanup, especially
+      // on timeout or interruption. Retention interest is separate.
       addRetentionInterest(unique);
       const captureSettled = (settledIds: ReadonlyArray<string>) =>
         settledIds.flatMap((id) => {
@@ -1179,6 +1181,9 @@ const makeManager = Effect.gen(function* () {
       });
       entry.snapshot.errorText =
         "Parent session ended while the run was active";
+      // The user cut this run off by quitting; it is resumable, not a result
+      // awaiting collection.
+      entry.snapshot.collected = true;
       persistNow(entry);
     }
     yield* Effect.forEach(
@@ -1227,6 +1232,16 @@ const makeManager = Effect.gen(function* () {
     requestAbort: (id) => {
       const entry = entries.get(id);
       if (entry) runDetached(abortEntry(entry).pipe(Effect.ignore));
+    },
+    collect: (ids) => {
+      for (const id of ids) {
+        const entry = entries.get(id);
+        if (!entry || entry.snapshot.status === "running") continue;
+        if (entry.snapshot.collected) continue;
+        entry.snapshot.collected = true;
+        persistNow(entry);
+        notify(id);
+      }
     },
     setOnSettled: (hook) => {
       onSettled = hook;

@@ -11,8 +11,11 @@
  * - subagent-resume: explicitly recover a persisted run.
  * - subagent-check/list: factual liveness, usage, readiness, and artifacts.
  *
- * Unawaited subagents queue their result as a follow-up message when they
- * settle. `/subagents` opens a picker + full interactive takeover view.
+ * Results are pull-only: settling never writes into the parent conversation
+ * or starts a turn. The footer counts settled results as ready or failed
+ * until the parent collects them with subagent-wait or subagent-check, or
+ * the user clears them in `/subagents`.
+ * `/subagents` opens a picker + full interactive takeover view.
  *
  * Architecture: Effect v4 generators throughout (backends -> manager ->
  * runtime); this file is the async boundary where tool handlers run effects
@@ -55,7 +58,6 @@ import {
 } from "./src/format.ts";
 import { SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
 import {
-  buildSubagentResultMessage,
   buildSubagentSpawnResult,
   SUBAGENT_CANCEL_PARAMETER_DESCRIPTIONS,
   SUBAGENT_CANCEL_TOOL_DESCRIPTION,
@@ -70,7 +72,6 @@ import {
   SUBAGENT_WAIT_TOOL_DESCRIPTION,
 } from "./src/prompt.ts";
 import { registerSpawnTools } from "./src/spawn.ts";
-import { createDeferredResultDelivery } from "./src/result-delivery.ts";
 import { buildReviewPrompt } from "./src/review.ts";
 import { loadChildGuidance } from "./src/guidance.ts";
 import {
@@ -160,15 +161,18 @@ function resolveChildProjectTrust(options: {
   }
 }
 
-export default function (pi: ExtensionAPI) {
+// Pi calls the factory with `pi` only; tests inject a runtime with stub backends.
+export default function (
+  pi: ExtensionAPI,
+  createRuntime: () => SubagentRuntime = createSubagentRuntime,
+) {
   let runtime: SubagentRuntime | undefined;
   let managerPromise: Promise<SubagentManagerShape> | undefined;
   let sessionContext: ExtensionContext | undefined;
   let ui: ExtensionUIContext | undefined;
   let unsubStatus: (() => void) | undefined;
-  const resultDelivery = createDeferredResultDelivery<SubagentSnapshot>();
 
-  const getRuntime = () => (runtime ??= createSubagentRuntime());
+  const getRuntime = () => (runtime ??= createRuntime());
 
   /** Resolve the manager service once per runtime and wire the extension hooks. */
   const getManager = () => {
@@ -190,7 +194,7 @@ export default function (pi: ExtensionAPI) {
             );
           }
         }
-        manager.view.setOnSettled(onSettled);
+        manager.view.setOnSettled((snap) => onSettled(manager, snap));
         unsubStatus?.();
         unsubStatus = manager.view.subscribe(() => updateStatus(manager));
         updateStatus(manager);
@@ -207,46 +211,19 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     const running = subs.filter((snap) => snap.status === "running").length;
-    const failed = subs.filter((snap) => snap.status === "failed").length;
-    if (running === 0 && failed === 0) {
+    const awaiting = subs.filter(
+      (snap) => snap.status !== "running" && !snap.collected,
+    );
+    const failed = awaiting.filter((snap) => snap.status === "failed").length;
+    const ready = awaiting.length - failed;
+    if (running === 0 && ready === 0 && failed === 0) {
       ui.setStatus("subagents", undefined);
       return;
     }
     ui.setStatus(
       "subagents",
-      formatActivityStatus(ui.theme, { running, failed }),
+      formatActivityStatus(ui.theme, { running, ready, failed }),
     );
-  };
-
-  const deliverResult = (snap: SubagentSnapshot) => {
-    if (snap.status === "running") return;
-    pi.sendMessage(
-      {
-        customType: "subagent-result",
-        content: buildSubagentResultMessage({
-          id: snap.id,
-          title: snap.title,
-          status: snap.status,
-          errorText: snap.errorText,
-          output: truncatedOutput(snap),
-          artifactPath: fs.existsSync(snap.artifacts.output)
-            ? snap.artifacts.output
-            : undefined,
-        }),
-        display: true,
-        details: {
-          id: snap.id,
-          title: snap.title,
-          status: snap.status,
-          artifactPath: snap.artifacts.output,
-        },
-      },
-      { deliverAs: "followUp", triggerTurn: true },
-    );
-  };
-
-  const flushResults = () => {
-    for (const snap of resultDelivery.drain()) deliverResult(snap);
   };
 
   const deliverBtwResult = (snap: SubagentSnapshot) => {
@@ -272,24 +249,15 @@ export default function (pi: ExtensionAPI) {
     );
   };
 
-  const onSettled = (snap: SubagentSnapshot, consumed: boolean) => {
+  // Model runs are pull-only: never push their result into the conversation
+  // or trigger a turn. That interrupts the user and repeats results the parent
+  // already used. The footer counts them until they are collected.
+  const onSettled = (manager: SubagentManagerShape, snap: SubagentSnapshot) => {
     // A shutdown can settle children while disposing their scopes. Never
     // append into a session whose extension runtime is already closing.
-    if (!sessionContext) return;
-    if (snap.origin === "btw") {
-      deliverBtwResult({ ...snap, meta: { ...snap.meta } });
-      return;
-    }
-    if (consumed) {
-      resultDelivery.consume([snap.id]);
-      return;
-    }
-    // Keep the result retractable while the parent is working. A later
-    // subagent-wait can consume it before agent_settled flushes follow-ups.
-    // Defer a copy: the live snapshot keeps mutating if the subagent is
-    // restarted before the deferred result flushes.
-    resultDelivery.defer({ ...snap, meta: { ...snap.meta } });
-    if (sessionContext?.isIdle()) flushResults();
+    if (!sessionContext || snap.origin !== "btw") return;
+    deliverBtwResult({ ...snap, meta: { ...snap.meta } });
+    manager.view.collect([snap.id]);
   };
 
   pi.on("session_start", (_event, ctx) => {
@@ -305,11 +273,8 @@ export default function (pi: ExtensionAPI) {
     });
   });
 
-  pi.on("agent_settled", flushResults);
-
   pi.on("session_shutdown", async () => {
     sessionContext = undefined;
-    resultDelivery.clear();
     unsubStatus?.();
     unsubStatus = undefined;
     ui?.setStatus("subagents", undefined);
@@ -469,7 +434,7 @@ export default function (pi: ExtensionAPI) {
         { signal, interruptMessage: "Wait aborted. Subagents keep running." },
       );
 
-      resultDelivery.consume(wait.settledIds);
+      manager.view.collect(wait.settledIds);
       const sections: string[] = [];
       let remainingBytes = WAIT_OUTPUT_MAX_BYTES;
       for (const snap of wait.settledSnapshots) {
@@ -719,6 +684,7 @@ export default function (pi: ExtensionAPI) {
         `\nRecovery: ${snap.recovery.available ? snap.recovery.mode : "not available"}` +
         `\nArtifact: ${snap.artifacts.output}`;
       if (snap.errorText) text += `\nError: ${snap.errorText}`;
+      manager.view.collect([snap.id]);
 
       const output = latestText(snap);
       if (output) {
@@ -794,6 +760,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   // --- Result message rendering ------------------------------------------
+
+  // Earlier releases pushed results as custom messages; keep rendering them
+  // in existing sessions.
 
   pi.registerMessageRenderer(
     "subagent-result",

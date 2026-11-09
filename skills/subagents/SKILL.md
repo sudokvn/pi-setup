@@ -9,7 +9,7 @@ Each child is headless, has its own context window and cannot see the parent con
 
 Delegate when isolation, parallel work, sustained investigation or independent assessment justifies the handoff. Keep trivial work with the parent. Prefer one child owning a coherent outcome over a routine research → writing → review pipeline.
 
-At most four runs can be active. The cap is fail-fast; there is no hidden queue. Results return automatically, so continue useful parent work instead of immediately waiting.
+At most four runs can be active. The cap is fail-fast; there is no hidden queue. Results are never pushed into the conversation. Continue useful parent work, then collect them with `subagent-wait` when progress or your answer depends on them. Until then the footer counts them as ready or failed.
 
 ## Choose the spawn tool
 

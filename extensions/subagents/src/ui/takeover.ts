@@ -214,6 +214,16 @@ class SubagentDashboard implements Component {
       if (snap && snap.status === "running") this.view.requestAbort(snap.id);
       return;
     }
+    // Clearing only stops the footer counting a result; the run stays here.
+    if (data === "c") {
+      const snap = subs[this.selection.index];
+      if (snap) this.view.collect([snap.id]);
+      return;
+    }
+    if (data === "C") {
+      this.view.collect(subs.map((snap) => snap.id));
+      return;
+    }
   }
 
   private pad(text: string, width: number): string {
@@ -292,7 +302,7 @@ class SubagentDashboard implements Component {
       truncateToWidth(
         theme.fg(
           "dim",
-          `  ${configuredKeys(this.keybindings, "tui.select.up")}/${configuredKeys(this.keybindings, "tui.select.down")}/jk select · ${configuredKeys(this.keybindings, "tui.select.confirm")} take over · x abort · ${configuredKeys(this.keybindings, "tui.select.cancel")} close`,
+          `  ${configuredKeys(this.keybindings, "tui.select.up")}/${configuredKeys(this.keybindings, "tui.select.down")}/jk select · ${configuredKeys(this.keybindings, "tui.select.confirm")} take over · x abort · c/C clear one/all from footer · ${configuredKeys(this.keybindings, "tui.select.cancel")} close`,
         ),
         width,
       ),

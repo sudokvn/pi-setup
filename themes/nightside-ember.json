@@ -5,9 +5,9 @@
   "vars": {
     "bg": "",
     "surface": "#16141F",
-    "selection": "#2F2A4A",
+    "selection": "#282432",
     "text": "#CDD3D6",
-    "muted": "#80848D",
+    "muted": "#8A8F98",
     "dim": "#757A83",
     "ember": "#F79926",
     "mint": "#75B39C",
@@ -38,7 +38,7 @@
     "userMessageText": "text",
     "customMessageBg": "",
     "customMessageText": "muted",
-    "customMessageLabel": "ember",
+    "customMessageLabel": "text",
     "toolPendingBg": "",
     "toolSuccessBg": "",
     "toolErrorBg": "",
@@ -63,7 +63,7 @@
     "syntaxVariable": "text",
     "syntaxString": "teal",
     "syntaxNumber": "mauve",
-    "syntaxType": "mint",
+    "syntaxType": "text",
     "syntaxOperator": "muted",
     "syntaxPunctuation": "muted",
     "thinkingOff": "mint",
@@ -73,6 +73,11 @@
     "thinkingHigh": "mint",
     "thinkingXhigh": "mint",
     "thinkingMax": "mint",
-    "bashMode": "mint"
+    "bashMode": "ember"
+  },
+  "export": {
+    "pageBg": "#0A0911",
+    "cardBg": "surface",
+    "infoBg": "emberSurface"
   }
 }

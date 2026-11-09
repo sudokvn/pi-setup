@@ -112,7 +112,7 @@ test("footer cost includes every usage-bearing entry and shows background cache 
     usage(0.03),
   );
   const footer = renderFooter(t, session);
-  assert.match(footer.render(), /\$0\.15$/);
+  assert.match(footer.render(), /\$0\.150$/);
 
   // Repeated frames reuse the total until an append moves the leaf.
   const reads = footer.branchReads();
@@ -122,7 +122,7 @@ test("footer cost includes every usage-bearing entry and shows background cache 
   // Cache warming appends usage while idle and only requests a render: no
   // extension event refreshes the footer.
   session.appendUsage("cache_warm", "openai", "gpt-test", usage(0.04));
-  assert.match(footer.render(), /\$0\.19$/);
+  assert.match(footer.render(), /\$0\.190$/);
   assert.equal(footer.branchReads(), reads + 1);
 });
 
@@ -133,7 +133,7 @@ test("footer cost follows the current branch, including the summary that switche
   session.appendMessage(user("Second."));
   session.appendMessage(assistant(2));
   const footer = renderFooter(t, session);
-  assert.match(footer.render(), /\$3\.00$/);
+  assert.match(footer.render(), /\$3\.000$/);
 
   session.branchWithSummary(
     first,
@@ -142,5 +142,5 @@ test("footer cost follows the current branch, including the summary that switche
     false,
     usage(0.25),
   );
-  assert.match(footer.render(), /\$1\.25$/);
+  assert.match(footer.render(), /\$1\.250$/);
 });

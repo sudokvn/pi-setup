@@ -88,6 +88,7 @@ import {
   type SubagentRuntime,
 } from "./src/runtime.ts";
 import { openSubagentPicker, openSubagentTakeover } from "./src/ui/takeover.ts";
+import { marker } from "../shared/markers.ts";
 
 const SUBAGENT_OUTPUT_MAX_BYTES = 24 * 1024;
 const WAIT_OUTPUT_MAX_BYTES = 48 * 1024;
@@ -803,7 +804,14 @@ export default function (
       };
       const failed =
         details.status === "failed" || details.status === "cancelled";
-      const icon = failed ? theme.fg("error", "x") : theme.fg("success", "■");
+      const icon = marker(
+        theme,
+        details.status === "cancelled"
+          ? "cancelled"
+          : failed
+            ? "failed"
+            : "done",
+      );
       const statusLabel =
         details.status === "cancelled"
           ? "cancelled"
@@ -851,7 +859,10 @@ export default function (
     (entry, { expanded }, theme) => {
       const data = entry.data;
       const failed = data?.status === "failed" || data?.status === "cancelled";
-      const icon = failed ? theme.fg("error", "x") : theme.fg("success", "■");
+      const icon = marker(
+        theme,
+        data?.status === "cancelled" ? "cancelled" : failed ? "failed" : "done",
+      );
       const statusLabel =
         data?.status === "cancelled"
           ? "cancelled"

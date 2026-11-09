@@ -18,6 +18,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { formatElapsed, formatExit, type TerminalSnapshot } from "../domain.ts";
 import type { TerminalReadModel } from "../manager.ts";
 import { createOutputLineCache, sanitizeText } from "./output-view.ts";
+import { marker } from "../../../shared/markers.ts";
 
 /** One-line-safe rendering of model-provided text (titles, commands): a
  * newline or control char inside a fixed-height row desyncs the renderer. */
@@ -35,13 +36,13 @@ function configuredKeys(
 function statusGlyph(snap: TerminalSnapshot, theme: Theme) {
   switch (snap.status) {
     case "running":
-      return theme.fg("warning", "■");
+      return marker(theme, "running");
     case "done":
-      return theme.fg("success", "■");
+      return marker(theme, "done");
     case "failed":
-      return theme.fg("error", "■");
+      return marker(theme, "failed");
     case "killed":
-      return theme.fg("muted", "■");
+      return marker(theme, "cancelled");
   }
 }
 

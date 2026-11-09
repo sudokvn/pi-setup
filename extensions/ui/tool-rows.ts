@@ -169,6 +169,20 @@ function timing(
 const DETAIL_INDENT = 4;
 
 /**
+ * Pi marks the changed words of a one-line replacement in inverse video, a
+ * filled block (diff.js hardcodes theme.inverse). Underline says the same
+ * without a block. Only SGR 7/27 are touched; colours stay as they are.
+ */
+// eslint-disable-next-line no-control-regex
+const INVERSE_ON = /\x1b\[7m/g;
+// eslint-disable-next-line no-control-regex
+const INVERSE_OFF = /\x1b\[27m/g;
+
+function underlineInsteadOfInverse(line: string) {
+  return line.replace(INVERSE_ON, "\x1b[4m").replace(INVERSE_OFF, "\x1b[24m");
+}
+
+/**
  * An expanded row is the collapsed row with its details indented beneath it,
  * not a filled block: the status stays on the marker, so no background is
  * needed, and nothing on screen competes with the user's own message.
@@ -192,7 +206,9 @@ function expandedCall(
       return [
         pad + (after ? `${head}${theme.fg("dim", SEPARATOR)}${after}` : head),
         // Tools that frame themselves (edit, write) put a spacer before their body.
-        ...dropBlankEdges(rest).map((line) => indent + line),
+        ...dropBlankEdges(rest).map(
+          (line) => indent + underlineInsteadOfInverse(line),
+        ),
       ];
     },
     invalidate() {
@@ -208,7 +224,7 @@ function expandedResult(result: Component, context: RenderContext): Component {
       // Pi's own result components start with a blank spacer line; the gap
       // between messages is Pi's, so none is added here either.
       return dropBlankEdges(result.render(width - indent.length)).map((line) =>
-        isBlank(line) ? "" : indent + line,
+        isBlank(line) ? "" : indent + underlineInsteadOfInverse(line),
       );
     },
     invalidate() {

@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { marker } from "../shared/markers.ts";
 
 const ENTRY_TYPE = "run-timer-result";
 
@@ -54,10 +55,8 @@ export default function (pi: ExtensionAPI, deps: RunTimerDeps = defaultDeps) {
       const summary = model
         ? `${theme.fg("text", model)}${theme.fg("dim", ` · ${durationLabel}`)}`
         : `${theme.fg("dim", aborted ? "Cancelled after" : "Worked for")} ${theme.fg("accent", formatted)}`;
-      const marker = aborted
-        ? theme.fg("warning", "○")
-        : theme.fg("success", "✓");
-      return new Text(`${marker} ${summary}`, 1, 0);
+      const glyph = marker(theme, aborted ? "cancelled" : "done");
+      return new Text(`${glyph} ${summary}`, 1, 0);
     },
   );
 

@@ -64,6 +64,7 @@ import {
 } from "./src/runtime.ts";
 import { sanitizeText } from "./src/ui/output-view.ts";
 import { openTerminalPicker } from "./src/ui/ps.ts";
+import { countMarker, marker } from "../shared/markers.ts";
 
 const WIDGET_KEY = "background-terminals";
 
@@ -72,9 +73,11 @@ function formatWidget(
   counts: { running: number; ready: number; failed: number },
 ) {
   const parts = [
-    counts.running > 0 && theme.fg("warning", `■ ${counts.running} running`),
-    counts.ready > 0 && theme.fg("success", `■ ${counts.ready} ready`),
-    counts.failed > 0 && theme.fg("error", `■ ${counts.failed} failed`),
+    counts.running > 0 &&
+      countMarker(theme, "running", `${counts.running} running`),
+    counts.ready > 0 && countMarker(theme, "done", `${counts.ready} ready`),
+    counts.failed > 0 &&
+      countMarker(theme, "failed", `${counts.failed} failed`),
   ].filter((part) => part !== false);
   return (
     theme.fg("text", "background terminals: ") +
@@ -417,11 +420,10 @@ export default function (pi: ExtensionAPI) {
       };
       const failed = details.status === "failed";
       const killed = details.status === "killed";
-      const icon = failed
-        ? theme.fg("error", "x")
-        : killed
-          ? theme.fg("muted", "■")
-          : theme.fg("success", "■");
+      const icon = marker(
+        theme,
+        failed ? "failed" : killed ? "cancelled" : "done",
+      );
       const how = killed
         ? "killed"
         : (details.signal ?? `exit ${details.exitCode ?? "?"}`);

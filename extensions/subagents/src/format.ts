@@ -1,6 +1,7 @@
 /** Context-utilization and activity-status formatting helpers. */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { countMarker } from "../../shared/markers.ts";
 
 export interface ContextUtilization {
   /** Current conversation context occupancy; undefined while unknown. */
@@ -53,18 +54,16 @@ interface ActivityCounts {
   failed: number;
 }
 
-const SQUARE = "■";
-
 export function formatActivityStatus(theme: Theme, counts: ActivityCounts) {
   const parts: string[] = [];
   if (counts.running > 0) {
-    parts.push(theme.fg("warning", `${SQUARE} ${counts.running} running`));
+    parts.push(countMarker(theme, "running", `${counts.running} running`));
   }
   if (counts.ready > 0) {
-    parts.push(theme.fg("success", `${SQUARE} ${counts.ready} ready`));
+    parts.push(countMarker(theme, "done", `${counts.ready} ready`));
   }
   if (counts.failed > 0) {
-    parts.push(theme.fg("error", `${SQUARE} ${counts.failed} failed`));
+    parts.push(countMarker(theme, "failed", `${counts.failed} failed`));
   }
   parts.push(theme.fg("accent", "/subagents") + theme.fg("dim", " to view"));
 

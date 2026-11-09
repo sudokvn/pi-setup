@@ -28,6 +28,7 @@ import {
 import { Cause, Effect, Exit } from "effect";
 import { Type, type Static } from "typebox";
 import { withHerdrBlocked } from "../shared/herdr.ts";
+import { marker } from "../shared/markers.ts";
 import {
   ASK_USER_PARAMETER_DESCRIPTIONS,
   ASK_USER_PROMPT_GUIDELINES,
@@ -1018,7 +1019,11 @@ export default function askUser(pi: ExtensionAPI) {
 
       if (isLegacyDetails(details)) {
         if (details.cancelled || details.answer === null) {
-          return new Text(theme.fg("warning", "✗ dismissed"), 0, 0);
+          return new Text(
+            `${marker(theme, "cancelled")} ${theme.fg("muted", "dismissed")}`,
+            0,
+            0,
+          );
         }
         if (details.wasCustom) {
           return new Text(
@@ -1040,7 +1045,11 @@ export default function askUser(pi: ExtensionAPI) {
       }
 
       if (details.cancelled || details.answers.length === 0) {
-        return new Text(theme.fg("warning", "✗ dismissed"), 0, 0);
+        return new Text(
+          `${marker(theme, "cancelled")} ${theme.fg("muted", "dismissed")}`,
+          0,
+          0,
+        );
       }
 
       const showLabels = details.questions.length > 1;

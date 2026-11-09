@@ -237,7 +237,8 @@ export default function ui(
           const cost = readBranchCost(ctx.sessionManager);
           if (cost > 0) {
             right.push({
-              text: theme.fg("muted", `$${cost.toFixed(2)}`),
+              // Three decimals, like Pi's own footer: most turns cost under a cent.
+              text: theme.fg("muted", `$${cost.toFixed(3)}`),
               dropAt: 80,
             });
           }

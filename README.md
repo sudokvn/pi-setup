@@ -67,11 +67,13 @@ Install these executables on `PATH` for the features you use:
 
 To use an included theme, set `"theme"` to `"github-dark-default"`,
 `"dark-mini"` or `"nightside-ember"` in `~/.pi/agent/settings.json`.
-`nightside-ember` is the Heylogix terminal theme with amber as the agent colour:
-pure black, no editor frame, tool blocks on navy, red only for errors. `dark-mini` is Pi's `dark` theme
-without backgrounds behind user messages and tool calls, and with one editor
-border color for every thinking level. Reasoning blocks are prefixed with
-_Thinking:_; user messages have no added transcript marker.
+`nightside-ember` is the Heylogix terminal theme with amber as the agent colour
+and no filled blocks: your messages are drawn as a quote with a mint bar, tool
+calls are one-line rows (mint done, amber running, red failed) whose details
+indent when expanded, and the editor lines turn amber in shell mode. `dark-mini`
+is Pi's `dark` theme without backgrounds behind user messages and tool calls,
+and with one editor border color for every thinking level. Reasoning blocks are
+prefixed with **Thinking:**.
 
 ## Web tools
 

@@ -19,7 +19,8 @@ function prefixMarkdown(prefix: string, markdown: string) {
  * `/tree` copies and the model input keep the original text. Pi renders quote
  * text italic; that goes away once Pi offers a border role for user messages.
  *
- * Reasoning gets a label so it is not mistaken for the answer.
+ * Reasoning gets a bold label so it is not mistaken for the answer; Pi already
+ * renders the whole block italic, so an italic label would vanish.
  */
 export const markTranscriptRoles: MarkdownTransformer = (
   markdown,
@@ -29,7 +30,7 @@ export const markTranscriptRoles: MarkdownTransformer = (
     case "user":
       return blockquote(markdown);
     case "assistant-thinking":
-      return prefixMarkdown("_Thinking:_", markdown);
+      return prefixMarkdown("**Thinking:**", markdown);
     default:
       return markdown;
   }

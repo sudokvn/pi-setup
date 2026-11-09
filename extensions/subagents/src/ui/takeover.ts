@@ -17,6 +17,7 @@ import { formatElapsed, type SubagentSnapshot } from "../domain.ts";
 import { formatContextUtilization } from "../format.ts";
 import type { SubagentReadModel } from "../manager.ts";
 import { buildTranscriptLines } from "./transcript.ts";
+import { marker } from "../../../shared/markers.ts";
 
 function configuredKeys(
   keybindings: KeybindingsManager,
@@ -33,12 +34,13 @@ function profileLabel(snap: SubagentSnapshot): string {
 function statusGlyph(snap: SubagentSnapshot, theme: Theme): string {
   switch (snap.status) {
     case "running":
-      return theme.fg("warning", "■");
+      return marker(theme, "running");
     case "done":
-      return theme.fg("success", "■");
+      return marker(theme, "done");
     case "failed":
+      return marker(theme, "failed");
     case "cancelled":
-      return theme.fg("error", "■");
+      return marker(theme, "cancelled");
   }
 }
 

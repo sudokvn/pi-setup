@@ -311,18 +311,18 @@ test("unseen failures stay in the footer across reloads until cleared in /subage
   const done = await first.spawn("finish normally");
   await first.settled(failed);
   await first.settled(done);
-  assert.match(first.status() ?? "", /1 ready · ■ 1 failed/);
+  assert.match(first.status() ?? "", /1 ready · ✗ 1 failed/);
   await first.shutdown();
 
   const second = host(sessionId);
   await second.start();
   try {
     await second.settled(failed);
-    assert.match(second.status() ?? "", /1 ready · ■ 1 failed/);
+    assert.match(second.status() ?? "", /1 ready · ✗ 1 failed/);
 
     // `c` clears the selected run, `C` the rest.
     await second.pressInPicker("c");
-    assert.match(second.status() ?? "", /^subagents: ■ 1 (ready|failed) · /);
+    assert.match(second.status() ?? "", /^subagents: [✓✗] 1 (ready|failed) · /);
     await second.pressInPicker("C");
     assert.equal(second.status(), undefined);
   } finally {

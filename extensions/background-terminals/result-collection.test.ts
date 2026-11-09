@@ -223,11 +223,11 @@ test("failures stay in the widget until cleared in /ps", () =>
     const done = await pi.start("echo fine");
     await pi.settled(failed);
     await pi.settled(done);
-    assert.match(pi.widget() ?? "", /1 ready · ■ 1 failed/);
+    assert.match(pi.widget() ?? "", /1 ready · ✗ 1 failed/);
 
     // `c` clears the selected terminal, `C` the rest.
     await pi.pressInPs("c");
-    assert.match(pi.widget() ?? "", /terminals: ■ 1 (ready|failed) • /);
+    assert.match(pi.widget() ?? "", /terminals: [✓✗] 1 (ready|failed) • /);
     await pi.pressInPs("C");
     assert.equal(pi.widget(), undefined);
 

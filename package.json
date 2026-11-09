@@ -26,7 +26,7 @@
     "check": "tsc --noEmit",
     "format": "prettier --write \"extensions/**/*.{ts,cjs}\" \"*.json\"",
     "format:check": "prettier --check \"extensions/**/*.{ts,cjs}\" \"*.json\"",
-    "test": "node --test --experimental-strip-types extensions/*/*.test.ts && vitest run extensions/file-search/index.spec.ts",
+    "test": "node --test --experimental-strip-types extensions/*/*.test.ts herdr/mods/*/*.test.js && vitest run extensions/file-search/index.spec.ts",
     "test:live": "node --test --experimental-strip-types extensions/subagents/claude.live.ts extensions/subagents/codex.live.ts",
     "test:cli": "node --test --experimental-strip-types extensions/cliproxyapi-provider/release.cli.ts"
   },
@@ -37,7 +37,7 @@
     "typebox": "*"
   },
   "name": "@trucke/pi-setup",
-  "version": "0.18.1",
+  "version": "0.19.0",
   "packageManager": "pnpm@11.28.9",
   "keywords": [
     "pi-package"

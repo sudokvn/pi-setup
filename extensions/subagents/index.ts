@@ -11,6 +11,9 @@
  * - subagent-resume: explicitly recover a persisted run.
  * - subagent-check/list: factual liveness, usage, readiness, and artifacts.
  *
+ * In a Herdr terminal, run names and states are also published as status
+ * records under Pi's terminal (src/herdr-status.ts).
+ *
  * Results are pull-only: settling never writes into the parent conversation
  * or starts a turn. The footer counts settled results as ready or failed
  * until the parent collects them with subagent-wait or subagent-check, or
@@ -74,6 +77,11 @@ import {
 import { registerSpawnTools } from "./src/spawn.ts";
 import { buildReviewPrompt } from "./src/review.ts";
 import { loadChildGuidance } from "./src/guidance.ts";
+import {
+  createHerdrStatus,
+  type HerdrStatus,
+  herdrStatusWriter,
+} from "./src/herdr-status.ts";
 import {
   createSubagentRuntime,
   runTool,
@@ -161,16 +169,20 @@ function resolveChildProjectTrust(options: {
   }
 }
 
-// Pi calls the factory with `pi` only; tests inject a runtime with stub backends.
+// Pi calls the factory with `pi` only; tests inject a runtime with stub
+// backends and a Herdr writer that never reaches a real terminal.
 export default function (
   pi: ExtensionAPI,
   createRuntime: () => SubagentRuntime = createSubagentRuntime,
+  createHerdrWriter: () =>
+    ((data: string) => void) | undefined = herdrStatusWriter,
 ) {
   let runtime: SubagentRuntime | undefined;
   let managerPromise: Promise<SubagentManagerShape> | undefined;
   let sessionContext: ExtensionContext | undefined;
   let ui: ExtensionUIContext | undefined;
   let unsubStatus: (() => void) | undefined;
+  let herdr: HerdrStatus | undefined;
 
   const getRuntime = () => (runtime ??= createRuntime());
 
@@ -196,8 +208,12 @@ export default function (
         }
         manager.view.setOnSettled((snap) => onSettled(manager, snap));
         unsubStatus?.();
-        unsubStatus = manager.view.subscribe(() => updateStatus(manager));
-        updateStatus(manager);
+        const publish = () => {
+          updateStatus(manager);
+          herdr?.update(manager.view.list());
+        };
+        unsubStatus = manager.view.subscribe(publish);
+        publish();
         return manager;
       });
     return managerPromise;
@@ -263,6 +279,12 @@ export default function (
   pi.on("session_start", (_event, ctx) => {
     sessionContext = ctx;
     if (ctx.hasUI) ui = ctx.ui;
+    // Only the interactive TUI owns the terminal; RPC has UI but no
+    // terminal, and child Pi sessions run in print mode.
+    const write = ctx.mode === "tui" ? createHerdrWriter() : undefined;
+    herdr = write && createHerdrStatus(write);
+    // A reload or a Pi that died without cleanup may have left records.
+    herdr?.clear();
     // Rediscover durable receipts on every startup/reload, but never resume
     // work automatically.
     void getManager().catch((error) => {
@@ -273,10 +295,17 @@ export default function (
     });
   });
 
+  // Pi drops every record of its terminal when it releases it, for example
+  // for an external editor, and restores only its own status. A new run is
+  // the next point where the user looks again.
+  pi.on("agent_start", () => herdr?.replay());
+
   pi.on("session_shutdown", async () => {
     sessionContext = undefined;
     unsubStatus?.();
     unsubStatus = undefined;
+    herdr?.clear();
+    herdr = undefined;
     ui?.setStatus("subagents", undefined);
     ui = undefined;
     const closing = runtime;

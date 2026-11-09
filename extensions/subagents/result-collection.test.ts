@@ -130,7 +130,8 @@ function host(sessionId = `parent-${Math.random().toString(36).slice(2)}`) {
     isProjectTrusted: () => true,
   } as unknown as ExtensionCommandContext & ExtensionToolContext;
 
-  subagentsExtension(pi, createStubRuntime);
+  // Tests may inherit a live HC_TERMINAL_ID; never report to the real terminal.
+  subagentsExtension(pi, createStubRuntime, () => undefined);
 
   const emit = async (event: string) => {
     for (const handler of handlers.get(event) ?? []) await handler({}, ctx);

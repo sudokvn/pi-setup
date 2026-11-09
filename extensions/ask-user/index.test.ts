@@ -590,6 +590,29 @@ test("editing a committed multi-select invalidates it until Done is confirmed ag
   assert.match(result.content[0].text, /Scope: User selected options: "Large"/);
 });
 
+test("every tab renders at the same height so the box does not jump", async () => {
+  const run = await openQuestionnaire({
+    questions: [
+      batch.questions[0],
+      {
+        ...batch.questions[1],
+        multiSelect: true,
+        options: ["A", "B", "C", "D"].map((label) => ({ label })),
+      },
+    ],
+  });
+  const heights = [0, 1, 2].map(() => {
+    const height = run.render().length;
+    run.input(TAB);
+    return height;
+  });
+  assert.deepEqual(new Set(heights).size, 1);
+  run.input(TAB, "1");
+  assert.equal(run.render().length, heights[0]);
+  run.input(ESC);
+  await run.result;
+});
+
 test("long options scroll inside a bounded view, keeping heading, focus and hints visible after resize", async () => {
   const run = await openQuestionnaire(
     {

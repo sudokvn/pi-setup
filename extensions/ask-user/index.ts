@@ -320,6 +320,7 @@ export default function askUser(pi: ExtensionAPI) {
             let scrollTop = 0;
             let bodyHeight = 1;
             let bodyLength = 0;
+            let stableRows = 0;
             let revealFocus = true;
             let settled = false;
 
@@ -358,11 +359,11 @@ export default function askUser(pi: ExtensionAPI) {
             }
 
             function onCustomRow() {
-              return currentOptions()[optionIndex]?.kind === "custom";
+              return optionsFor()[optionIndex]?.kind === "custom";
             }
 
-            function currentOptions(): DisplayOption[] {
-              const question = currentQuestion();
+            function optionsFor(tab = currentTab): DisplayOption[] {
+              const question = questions[tab];
               if (!question) return [];
               return [
                 ...question.options.map((option) => ({
@@ -429,7 +430,7 @@ export default function askUser(pi: ExtensionAPI) {
             function submitCustom() {
               if (currentQuestion().multiSelect) {
                 // The text is already part of the selection; continue to Done.
-                optionIndex = currentOptions().length - 1;
+                optionIndex = optionsFor().length - 1;
                 refresh();
                 return;
               }
@@ -484,7 +485,7 @@ export default function askUser(pi: ExtensionAPI) {
             }
 
             function selectOption(index: number) {
-              const selected = currentOptions()[index];
+              const selected = optionsFor()[index];
               if (!selected) return;
 
               optionIndex = index;
@@ -548,7 +549,7 @@ export default function askUser(pi: ExtensionAPI) {
                 return;
               }
 
-              const options = currentOptions();
+              const options = optionsFor();
               if (matchesKey(data, Key.up) || (!typing && data === "k")) {
                 optionIndex =
                   (optionIndex - 1 + options.length) % options.length;
@@ -599,40 +600,13 @@ export default function askUser(pi: ExtensionAPI) {
               }
             }
 
-            function render(width: number) {
-              const rows = Math.max(4, tui.terminal.rows || 30);
-              const renderWidth = Math.max(1, width);
-              if (
-                cachedLines &&
-                cachedWidth === renderWidth &&
-                cachedRows === rows
-              )
-                return cachedLines;
-              if (cachedWidth !== renderWidth || cachedRows !== rows)
-                revealFocus = true;
-              cachedWidth = renderWidth;
-              cachedRows = rows;
-
-              // Plain decision context stays adjacent to the question box, outside
-              // its border and without the transcript tool row's wrapper or gap.
-              const intro = contextView
-                ? [
-                    ...contextView
-                      .render(Math.max(1, renderWidth - 2))
-                      .map((line) => ` ${line}`),
-                    "",
-                  ]
-                : [];
-              const rowBudget = Math.max(
-                4,
-                Math.min(rows - 2, Math.max(12, Math.floor(rows * 0.7))) -
-                  intro.length,
-              );
+            /** Builds one tab without side effects beyond focusing the highlighted field. */
+            function layoutTab(tab: number, renderWidth: number) {
               const heading: string[] = [];
               const body: string[] = [];
               let focus: [number, number] | undefined;
-              const question = currentQuestion();
-              const options = currentOptions();
+              const question = questions[tab];
+              const options = optionsFor(tab);
               const title = isBatch ? " Questions " : " Question ";
               heading.push(
                 theme.fg(
@@ -665,7 +639,7 @@ export default function askUser(pi: ExtensionAPI) {
                 heading.push(` ${tabs.join(" ")}`);
               }
 
-              if (currentTab === submitTab) {
+              if (tab === submitTab) {
                 heading.push(
                   theme.fg("accent", theme.bold(" Review your answers")),
                 );
@@ -702,18 +676,19 @@ export default function askUser(pi: ExtensionAPI) {
                 for (let index = 0; index < options.length; index++) {
                   const option = options[index];
                   const start = body.length;
-                  const highlighted = index === optionIndex;
+                  const highlighted =
+                    tab === currentTab && index === optionIndex;
                   const checked =
                     option.kind === "option"
-                      ? selections.get(currentTab)?.has(index)
-                      : customDraft() !== "";
+                      ? selections.get(tab)?.has(index)
+                      : customDraft(tab) !== "";
                   const marker =
                     option.kind === "done"
                       ? "→"
                       : `${question.multiSelect ? `[${checked ? "x" : " "}] ` : ""}${option.kind === "custom" ? "✎" : `${index + 1}.`}`;
                   const indent = " ".repeat(3 + marker.length + 1);
                   const textWidth = Math.max(1, renderWidth - indent.length);
-                  const input = customInputs[currentTab];
+                  const input = customInputs[tab];
                   const color = highlighted
                     ? "accent"
                     : option.kind === "option" ||
@@ -745,8 +720,8 @@ export default function askUser(pi: ExtensionAPI) {
                   );
                   const description =
                     option.kind === "done" &&
-                    !selections.get(currentTab)?.size &&
-                    !customDraft()
+                    !selections.get(tab)?.size &&
+                    !customDraft(tab)
                       ? "Select at least one option or write an answer."
                       : option.description;
                   if (description) {
@@ -760,6 +735,48 @@ export default function askUser(pi: ExtensionAPI) {
                   if (highlighted) focus = [start, body.length];
                 }
               }
+              return { heading, body, focus };
+            }
+
+            function render(width: number) {
+              const rows = Math.max(4, tui.terminal.rows || 30);
+              const renderWidth = Math.max(1, width);
+              if (
+                cachedLines &&
+                cachedWidth === renderWidth &&
+                cachedRows === rows
+              )
+                return cachedLines;
+              if (cachedWidth !== renderWidth || cachedRows !== rows) {
+                revealFocus = true;
+                stableRows = 0;
+              }
+              cachedWidth = renderWidth;
+              cachedRows = rows;
+
+              // Plain decision context stays adjacent to the question box, outside
+              // its border and without the transcript tool row's wrapper or gap.
+              const intro = contextView
+                ? [
+                    ...contextView
+                      .render(Math.max(1, renderWidth - 2))
+                      .map((line) => ` ${line}`),
+                    "",
+                  ]
+                : [];
+              const rowBudget = Math.max(
+                4,
+                Math.min(rows - 2, Math.max(12, Math.floor(rows * 0.7))) -
+                  intro.length,
+              );
+              const question = currentQuestion();
+              const options = optionsFor();
+              const {
+                heading,
+                body,
+                focus: tabFocus,
+              } = layoutTab(currentTab, renderWidth);
+              let focus = tabFocus;
 
               const tabHint = isBatch ? "Tab tabs • " : "";
               const typing = currentTab !== submitTab && onCustomRow();
@@ -781,6 +798,24 @@ export default function askUser(pi: ExtensionAPI) {
                     : " Enter confirm • Esc dismiss";
               }
               const footerRows = rowBudget >= 6 ? 3 : 1;
+              // The box grows upward from the editor, so a shorter tab would move its
+              // top border. Pad every tab to the tallest content seen at this size,
+              // capped at the visible area so padding never causes scrolling.
+              for (let tab = 0; tab < tabCount; tab++) {
+                const layout =
+                  tab === currentTab
+                    ? { heading, body }
+                    : layoutTab(tab, renderWidth);
+                stableRows = Math.max(
+                  stableRows,
+                  layout.heading.length + layout.body.length,
+                );
+              }
+              const padding =
+                Math.min(stableRows, rowBudget - footerRows) -
+                heading.length -
+                body.length;
+              if (padding > 0) body.push(...Array<string>(padding).fill(""));
               const headingRows = Math.max(
                 1,
                 Math.min(Math.floor(rowBudget / 2), rowBudget - footerRows - 1),

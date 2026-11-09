@@ -4,7 +4,6 @@ import {
   VERSION,
   type ExtensionAPI,
   type ExtensionContext,
-  type MarkdownTransformer,
   type ReadonlyFooterDataProvider,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -17,6 +16,7 @@ import { askUserRow } from "./ask-user.ts";
 import { codemodeRow } from "./codemode.ts";
 import { compactToolRows } from "./tool-rows.ts";
 import { fitFooterLine, type FooterSegment } from "./footer-layout.ts";
+import { markTranscriptRoles } from "./transcript.ts";
 import { registerVcsInfo } from "./vcs/index.ts";
 import { emptyVcsInfoState, type VcsInfoState } from "./vcs/state.ts";
 
@@ -29,8 +29,6 @@ interface ModelInfo {
   cost: number;
 }
 
-// A fenced block must start on its own line, so the marker cannot share it.
-const FENCE_START = /^\s*(```|~~~)/;
 // eslint-disable-next-line no-control-regex
 const OSC_PATTERN =
   /(?:\u001b\]|\u009d)(?:[^\u0007\u001b\u009c]|\u001b(?!\\))*(?:\u0007|\u001b\\|\u009c)/g;
@@ -64,23 +62,6 @@ function formatTokens(tokens: number) {
   if (tokens < 1_000_000) return `${(tokens / 1000).toFixed(1)}K`;
   return `${(tokens / 1_000_000).toFixed(1)}M`;
 }
-
-function prefixMarkdown(prefix: string, markdown: string) {
-  return FENCE_START.test(markdown)
-    ? `${prefix}\n${markdown}`
-    : `${prefix} ${markdown}`;
-}
-
-/** Label reasoning without changing user or assistant text. */
-export const markTranscriptRoles: MarkdownTransformer = (
-  markdown,
-  { messageType },
-) => {
-  if (messageType === "assistant-thinking") {
-    return prefixMarkdown("_Thinking:_", markdown);
-  }
-  return markdown;
-};
 
 function getSessionCost(ctx: ExtensionContext) {
   let cost = 0;

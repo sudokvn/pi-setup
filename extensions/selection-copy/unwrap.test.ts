@@ -5,7 +5,7 @@ import {
   stripTerminalSequences,
   type MarkdownTheme,
 } from "@earendil-works/pi-tui";
-import { unwrapSelection } from "./unwrap.ts";
+import { stripQuoteBars, unwrapSelection } from "./unwrap.ts";
 
 const plain = (text: string) => text;
 const theme: MarkdownTheme = {
@@ -65,6 +65,28 @@ test("keeps real line breaks, paragraphs and list items", () => {
 test("joins a word split across rows without adding spaces", () => {
   const url = "see https://example.com/a/very/long/path/that/cannot/fit";
   assert.equal(unwrap(url, 20), url);
+});
+
+test("copies a quoted user message without the bars, wrapped rows joined", () => {
+  const message =
+    "fix the loader so it narrows the theme param instead of widening it\n\nthen add one test";
+  const quoted = message
+    .split("\n")
+    .map((line) => (line ? `> ${line}` : ">"))
+    .join("\n");
+  assert.equal(stripQuoteBars(unwrap(quoted, 30)), message);
+});
+
+test("a quote inside the user's message keeps its own bar", () => {
+  assert.equal(
+    stripQuoteBars("│ │ Understood.\n│\n│ just another test"),
+    "│ Understood.\n\njust another test",
+  );
+});
+
+test("keeps the bars when the selection mixes quoted and plain rows", () => {
+  const mixed = "│ quoted\nplain";
+  assert.equal(stripQuoteBars(mixed), mixed);
 });
 
 test("counts unselected columns of the first row", () => {

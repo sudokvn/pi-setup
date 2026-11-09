@@ -31,13 +31,7 @@ export function quotableBlocks(text: string): string[] {
     .filter((block) => block.trim());
 }
 
-/** Prefixes every line with `> `, so Markdown renders the text as a block quote. */
-export function blockquote(text: string) {
-  return text
-    .split(/\r?\n/)
-    .map((line) => (line.trim() ? `> ${line}` : ">"))
-    .join("\n");
-}
+export { blockquote } from "../../shared/blockquote.ts";
 
 /** Blocks containing every word of the search, case-insensitively. */
 export function matchingBlocks<T extends { readonly text: string }>(

@@ -13,7 +13,7 @@ import {
   type Terminal,
   TuiAltScreen,
 } from "@earendil-works/pi-tui";
-import { unwrapSelection } from "./unwrap.ts";
+import { stripQuoteBars, unwrapSelection } from "./unwrap.ts";
 
 interface SelectionPoint {
   readonly row: number;
@@ -57,11 +57,13 @@ export function installUnwrappedCopy(rightPad: () => number) {
     const start = this.getSelectionBounds()?.start;
     // Only transcript text wraps to the scroll view's width; leave panels alone.
     if (text === undefined || !start?.scrollView) return text;
-    return unwrapSelection(text, {
-      width: start.scrollView.getContentWidth(this.terminal.columns),
-      rightPad: rightPad(),
-      firstColumn: start.col,
-    });
+    return stripQuoteBars(
+      unwrapSelection(text, {
+        width: start.scrollView.getContentWidth(this.terminal.columns),
+        rightPad: rightPad(),
+        firstColumn: start.col,
+      }),
+    );
   };
   Object.defineProperty(patched, PATCHED, { value: true });
   host.getActiveSelectionText = patched;

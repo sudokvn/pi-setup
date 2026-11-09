@@ -4,8 +4,6 @@ import type {
   ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 import {
-  Box,
-  Spacer,
   Text,
   stripTerminalSequences,
   truncateToWidth,
@@ -83,6 +81,12 @@ const SCROLLBAR_GUTTER = 1;
 /** Wide enough that a call line is not wrapped before the row truncates it. */
 const UNWRAPPED_WIDTH = 1000;
 
+/** The line without the padding components add up to their render width. */
+function trimLineEnd(line: string) {
+  const width = visibleWidth(stripTerminalSequences(line).trimEnd());
+  return truncateToWidth(line, width, "");
+}
+
 /** First non-blank line, without trailing padding. */
 function firstVisibleLine(component: Component) {
   for (const line of component.render(UNWRAPPED_WIDTH)) {
@@ -90,6 +94,17 @@ function firstVisibleLine(component: Component) {
     if (width > 0) return truncateToWidth(line, width, "");
   }
   return undefined;
+}
+
+/** Padding lines carry colour sequences, so emptiness is checked on the text. */
+function isBlank(line: string | undefined) {
+  return line === undefined || !stripTerminalSequences(line).trim();
+}
+
+function dropBlankEdges(lines: string[]) {
+  while (lines.length > 0 && isBlank(lines[0])) lines.shift();
+  while (lines.length > 0 && isBlank(lines.at(-1))) lines.pop();
+  return lines;
 }
 
 /** Colors and text attributes; OSC 8 links stay clickable. */
@@ -150,23 +165,56 @@ function timing(
     : theme.fg("dim", formatDuration(context.durationMs));
 }
 
-/** Pi's default shell: a padded block whose background shows the row's status. */
-function frame(
-  content: Component,
+/** Columns the expanded details sit in from the row's marker. */
+const DETAIL_INDENT = 4;
+
+/**
+ * An expanded row is the collapsed row with its details indented beneath it,
+ * not a filled block: the status stays on the marker, so no background is
+ * needed, and nothing on screen competes with the user's own message.
+ */
+function expandedCall(
+  call: Component,
   theme: Theme,
   context: RenderContext,
-  position: "call" | "result",
-) {
-  const bg = context.isPartial
-    ? "toolPendingBg"
-    : context.isError
-      ? "toolErrorBg"
-      : "toolSuccessBg";
-  const box = new Box(context.outputPad, 0, (text) => theme.bg(bg, text));
-  if (position === "call") box.addChild(new Spacer(1));
-  box.addChild(content);
-  if (position === "result") box.addChild(new Spacer(1));
-  return box;
+  state: RowState,
+): Component {
+  return {
+    render(width: number) {
+      const now = Date.now();
+      const pad = " ".repeat(context.outputPad);
+      const indent = pad + " ".repeat(DETAIL_INDENT);
+      const [first = "", ...rest] = dropBlankEdges(
+        call.render(width - context.outputPad - DETAIL_INDENT),
+      );
+      const after = timing(theme, context, state, now);
+      const head = `${statusMarker(theme, context, now)} ${trimLineEnd(first).trimStart()}`;
+      return [
+        pad + (after ? `${head}${theme.fg("dim", SEPARATOR)}${after}` : head),
+        // Tools that frame themselves (edit, write) put a spacer before their body.
+        ...dropBlankEdges(rest).map((line) => indent + line),
+      ];
+    },
+    invalidate() {
+      call.invalidate();
+    },
+  };
+}
+
+function expandedResult(result: Component, context: RenderContext): Component {
+  const indent = " ".repeat(context.outputPad + DETAIL_INDENT);
+  return {
+    render(width: number) {
+      // Pi's own result components start with a blank spacer line; the gap
+      // between messages is Pi's, so none is added here either.
+      return dropBlankEdges(result.render(width - indent.length)).map((line) =>
+        isBlank(line) ? "" : indent + line,
+      );
+    },
+    invalidate() {
+      result.invalidate();
+    },
+  };
 }
 
 /** Pi's fallback for tools without a call renderer: the name and its arguments. */
@@ -212,7 +260,6 @@ export function compactToolRows(
   return (toolName, next) => {
     const builtIn = next();
     const spec = specs[toolName];
-    const ownFraming = builtIn?.renderShell === "self";
 
     const innerCall: RenderCall = (args, theme, context) => {
       const state = rowState(context);
@@ -233,8 +280,9 @@ export function compactToolRows(
         const state = rowState(context);
         updateTicker(state, context);
         if (context.expanded) {
-          const call = innerCall(args, theme, context);
-          return ownFraming ? call : frame(call, theme, context, "call");
+          // The indent replaces the padding self-framing tools would apply.
+          const call = innerCall(args, theme, { ...context, outputPad: 0 });
+          return expandedCall(call, theme, context, state);
         }
 
         const call = spec?.label ? undefined : innerCall(args, theme, context);
@@ -316,13 +364,12 @@ export function compactToolRows(
           const component = builtIn?.renderResult
             ? builtIn.renderResult(result, options, theme, {
                 ...context,
+                outputPad: 0,
                 lastComponent: state.innerResult,
               })
             : fallbackResult(result, theme);
           state.innerResult = component;
-          return ownFraming
-            ? component
-            : frame(component, theme, context, "result");
+          return expandedResult(component, context);
         }
 
         const summary = spec?.summarize?.(result, theme) ?? {};

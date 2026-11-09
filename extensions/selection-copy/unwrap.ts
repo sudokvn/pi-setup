@@ -14,6 +14,8 @@ const BOX_DRAWING_END = /[\u2500-\u257f]\s*$/;
 const LIST_ITEM = /^(?:[-*+•]|\d+[.)])\s/;
 /** Quote bars that Pi repeats on every wrapped row of a block quote. */
 const QUOTE_PREFIX = /^\s*(?:│ ?)+/;
+/** One level of quoting: the bar the user message adds around its text. */
+const OUTER_QUOTE_BAR = /^\s*│ ?/;
 
 /** The next row without the indentation or quote bars repeated from the wrapped row. */
 function continuation(previous: string, next: string) {
@@ -51,6 +53,26 @@ function isWrap(
 function separator(previous: string, previousWidth: number, limit: number) {
   const content = previous.replace(QUOTE_PREFIX, "").trim();
   return previousWidth >= limit && !/\s/.test(content) ? "" : " ";
+}
+
+/**
+ * Drops one level of quote bars when the whole selection is one block quote.
+ * That bar is rendering, not text: the user's own messages are drawn as quotes
+ * (see ui/transcript.ts), and nobody wants `│ ` in front of every pasted line.
+ * A quote the user wrote inside the message keeps its own bar, and a selection
+ * that also contains unquoted rows keeps all bars, since they then tell quoted
+ * and unquoted text apart.
+ */
+export function stripQuoteBars(text: string) {
+  const lines = text.split("\n");
+  const content = lines.filter((line) => line.trim());
+  if (
+    content.length === 0 ||
+    !content.every((line) => QUOTE_PREFIX.test(line))
+  ) {
+    return text;
+  }
+  return lines.map((line) => line.replace(OUTER_QUOTE_BAR, "")).join("\n");
 }
 
 /** Join rows that Pi wrapped to fit the screen, keeping real line breaks. */

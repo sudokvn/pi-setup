@@ -26,7 +26,7 @@ Both tools return the same run ids and use the same wait, check, send, cancel an
 | `lookup`   | Verify bounded external questions using authoritative, current sources          | Pi · GPT-5.6 Luna · medium     |
 | `code`     | Implement scoped changes within established architecture                        | Pi · GLM-5.3-Flash · high      |
 | `build`    | Own substantial engineering decisions and implementation                        | Pi · Claude Opus 5.5 · xhigh   |
-| `ui`       | Own interface design, implementation and browser validation                     | Pi · Claude Fable 5.1 · high   |
+| `ui`       | Own interface design, implementation and browser validation                     | Pi · Claude Fable 5.2 · high   |
 | `review`   | Independently assess code, plans, interfaces or documents                       | Pi · GPT-6.1 Sol Fast · max    |
 | `research` | Investigate substantial questions through the analytical deliverable            | Pi · GPT-6 Astra · high        |
 | `write`    | Draft and refine prose while preserving established substance                   | Pi · Claude Opus 5.5 · medium  |

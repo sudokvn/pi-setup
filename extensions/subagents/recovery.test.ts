@@ -9,6 +9,7 @@ import { persistSnapshot } from "./src/artifacts.ts";
 import { makeStubBackend } from "./src/backends/stub.ts";
 import type { SpawnTask } from "./src/domain.ts";
 import { SubagentManager, SubagentManagerLive } from "./src/manager.ts";
+import { EXECUTION_PROFILES } from "./src/profiles.ts";
 
 const stateDirectory = fs.mkdtempSync(
   path.join(os.tmpdir(), "pi-subagents-recovery-test-"),
@@ -109,3 +110,82 @@ for (const [profile, mode] of [
     }
   });
 }
+
+test("a recorded ui run keeps its Fable 5.1 contract after the profile moves to 5.2", async () => {
+  const recorded = "proxy/claude-fable-5-1";
+  assert.deepEqual(EXECUTION_PROFILES.ui.execution, {
+    harness: "pi",
+    model: "proxy/claude-fable-5-2",
+    reasoningEffort: "high",
+    runMode: "agent",
+  });
+  const captured: SpawnTask[] = [];
+  const stub = makeStubBackend({
+    backend: "pi",
+    defaultModelLabel: "stub",
+    contextWindow: 1000,
+    toolName: "read",
+    cadenceMs: 1,
+  });
+  const registry = Layer.succeed(
+    BackendRegistry,
+    new Map([
+      [
+        "pi",
+        {
+          ...stub,
+          spawn(task: SpawnTask) {
+            captured.push(task);
+            return stub.spawn(task);
+          },
+        },
+      ],
+    ]),
+  );
+  const createRuntime = () =>
+    ManagedRuntime.make(SubagentManagerLive.pipe(Layer.provide(registry)));
+  const parent = {
+    parentCwd: process.cwd(),
+    parentSessionId: "ui-fable-migration",
+    projectTrusted: true,
+  };
+  let runtime = createRuntime();
+  try {
+    let manager = await runtime.runPromise(SubagentManager);
+    // A run started before the migration recorded the old profile pin.
+    const snap = await runtime.runPromise(
+      manager.spawn("pi", {
+        prompt: "Polish the settings screen.",
+        title: "ui",
+        cwd: process.cwd(),
+        parent,
+        profile: "ui",
+        model: recorded,
+        reasoningEffort: "high",
+      }),
+    );
+    await runtime.runPromise(manager.waitFor([snap.id]));
+    await runtime.dispose();
+
+    runtime = createRuntime();
+    manager = await runtime.runPromise(SubagentManager);
+    await runtime.runPromise(
+      manager.restore(parent.parentSessionId, process.cwd()),
+    );
+    await runtime.runPromise(
+      manager.resume(snap.id, "Continue.", parent, "continuation"),
+    );
+    const resumed = captured.at(-1)!;
+    assert.equal(resumed.model, recorded);
+    assert.equal(resumed.reasoningEffort, "high");
+    assert.deepEqual(manager.view.get(snap.id)!.execution.selected, {
+      harness: "pi",
+      model: recorded,
+      reasoningEffort: "high",
+      runMode: "agent",
+    });
+    await runtime.runPromise(manager.waitFor([snap.id]));
+  } finally {
+    await runtime.dispose();
+  }
+});

@@ -352,6 +352,62 @@ test("lets Pi retry a response dropped before response.completed", async (t) => 
   }
 });
 
+test("sends continuation-free replays over HTTP and keeps the WebSocket continuation", async (t) => {
+  const f = await fixture(t);
+  const first = await f.turn([user("a")]);
+  // Cache warming repeats the last request with continuation disabled.
+  const replay = await f.turn([user("a")], "session-1", {
+    disableContinuation: true,
+    maxTokens: 1,
+  });
+  assert.equal(text(replay), "reply to a 👋");
+  const second = await f.turn([user("a"), first, user("b")]);
+  assert.equal(text(second), "reply to b 👋");
+  // A replay running next to a real turn stays out of its way, too.
+  const [again, third] = await Promise.all([
+    f.turn([user("a"), first, user("b")], "session-1", {
+      disableContinuation: true,
+    }),
+    f.turn([user("a"), first, user("b"), second, user("c")]),
+  ]);
+  assert.equal(text(again), "reply to b 👋");
+  assert.equal(text(third), "reply to c 👋");
+
+  const byTransport = (transport: string) =>
+    f.mock.requests.filter((request) => request.transport === transport);
+  assert.deepEqual(
+    byTransport("websocket").map((request) => [
+      request.connection,
+      request.delta,
+    ]),
+    [
+      [1, false],
+      [1, true],
+      [1, true],
+    ],
+  );
+  // Each replay carried its full input over HTTP.
+  assert.deepEqual(
+    byTransport("sse").map((request) =>
+      project(request.merged).map((item) => (isJson(item) ? item.text : item)),
+    ),
+    [
+      ["Be brief.", "a"],
+      ["Be brief.", "a", "reply to a 👋", "b"],
+    ],
+  );
+  const [status] = f.proxy.transport.status();
+  assert.deepEqual(
+    [
+      status?.stats.fullRequests,
+      status?.stats.deltaRequests,
+      status?.stats.connectionsOpened,
+      status?.stats.lastFallback,
+    ],
+    [1, 2, 1, undefined],
+  );
+});
+
 test("aborts a stalled request and recovers on a new connection", async (t) => {
   const f = await fixture(t);
   f.mock.faults.stall = true;

@@ -66,7 +66,7 @@ export const EXECUTION_PROFILES = {
     description: "Own interface design, implementation and browser validation",
     execution: {
       harness: "pi",
-      model: "proxy/claude-fable-5-1",
+      model: "proxy/claude-fable-5-2",
       reasoningEffort: "high",
       runMode: "agent",
     },

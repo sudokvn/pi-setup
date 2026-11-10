@@ -37,7 +37,7 @@ Profiles are typed, source-controlled configuration in `src/profiles.ts`. Each h
 | `lookup`   | Pi          | `openai-codex/gpt-5.6-luna` | medium |
 | `code`     | Pi          | `opencode-go/glm-5.3-flash` | high   |
 | `build`    | Pi          | `proxy/claude-opus-5-5`    | xhigh  |
-| `ui`       | Pi          | `proxy/claude-fable-5-1`   | high   |
+| `ui`       | Pi          | `proxy/claude-fable-5-2`   | high   |
 | `review`   | Pi          | `proxy/gpt-6.1-sol-fast`   | max    |
 | `research` | Pi          | `openai-codex/gpt-6-astra`  | high   |
 | `write`    | Pi          | `proxy/claude-opus-5-5`    | medium |

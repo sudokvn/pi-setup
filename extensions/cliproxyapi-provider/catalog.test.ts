@@ -141,6 +141,10 @@ test("routes only bare GPT and Claude ids, with CPA limits and Pi catalog metada
   assert.equal(opus.reasoning, true);
   assert.equal(opus.compat?.forceAdaptiveThinking, true);
   assert.equal(opus.compat?.supportsMidConvoEffort, undefined);
+  // Direct-Anthropic cache lifetimes and fallbacks do not hold through CPA without a route.
+  assert.equal(opus.promptCache, undefined);
+  assert.equal(opus.compat?.allowedFallbackModels, undefined);
+  assert.equal(opus.compat?.supportsMessageThreads, undefined);
   assert.equal(opus.contextWindow, 500_000);
   assert.match(
     info.get("claude-opus-5-5")?.warnings.join() ?? "",
@@ -191,6 +195,124 @@ test("explicit routes win over inference, CPA and catalog data", () => {
   assert.deepEqual(catalog.warnings, [
     "route gpt-retired is configured but CPA does not offer it",
   ]);
+});
+
+test("config checks compat value types, prompt cache lifetimes and fallback lists", async () => {
+  const route = (value: object) =>
+    JSON.stringify({ baseUrl: "http://cpa.test", routes: { r: value } });
+  for (const valid of [
+    { compat: { promptCacheKeyMode: "enabled" } },
+    {
+      compat: {
+        supportsMessageThreads: true,
+        sendSessionAffinityHeaders: true,
+      },
+    },
+    { promptCache: { short: 300, long: 3600 } },
+    { promptCache: { long: 3600 } },
+    { fallbackModels: ["claude-opus-5"] },
+  ]) {
+    const result = await parse(route(valid));
+    assert.equal(result._tag, "Success", JSON.stringify(valid));
+  }
+  for (const invalid of [
+    { compat: { promptCacheKeyMode: true } },
+    { compat: { promptCacheKeyMode: "always" } },
+    { compat: { supportsMessageThreads: "yes" } },
+    { compat: { supportsMessageThread: true } },
+    { promptCache: {} },
+    { promptCache: { short: 0 } },
+    { promptCache: { short: -300 } },
+    { promptCache: { short: "300" } },
+    { promptCache: { medium: 300 } },
+    { fallbackModels: [] },
+    { fallbackModels: ["a", "b", "c", "d"] },
+  ]) {
+    const result = await parse(route(invalid));
+    assert.equal(result._tag, "Failure", JSON.stringify(invalid));
+  }
+});
+
+test("lifetimes and fallbacks come only from routes, and fallbacks must be priced compatible routes", () => {
+  const catalog = resolveCatalog(
+    [
+      { id: "claude-fable-5-2" },
+      { id: "claude-opus-5" },
+      { id: "claude-opus-5-5" },
+      { id: "gpt-6.1-sol" },
+    ],
+    config({
+      "claude-fable-5-2": {
+        promptCache: { short: 300, long: 3600 },
+        fallbackModels: ["claude-opus-5", "claude-opus-5-5"],
+        compat: {
+          supportsMidConvoEffort: true,
+          supportsMessageThreads: true,
+          sendSessionAffinityHeaders: true,
+          promptCacheKeyMode: "disabled",
+        },
+      },
+      "claude-opus-5": { compat: { supportsMidConvoEffort: true } },
+      "gpt-6.1-sol": {
+        fallbackModels: ["claude-opus-5"],
+        compat: { promptCacheKeyMode: "enabled", supportsMessageThreads: true },
+      },
+    }),
+    bundledReference,
+  );
+  const byId = new Map(catalog.models.map((model) => [model.id, model]));
+  const warnings = (id: string) =>
+    catalog.routes.find((route) => route.id === id)?.warnings ?? [];
+
+  const fable = byId.get("claude-fable-5-2");
+  assert.ok(fable && hasApi(fable, "anthropic-messages"));
+  assert.deepEqual(fable.promptCache, { short: 300, long: 3600 });
+  assert.equal(fable.compat?.supportsMessageThreads, true);
+  assert.equal(fable.compat?.sendSessionAffinityHeaders, true);
+  // The fallback is priced as this proxy's claude-opus-5 route, so Pi can match the reply.
+  assert.deepEqual(fable.compat?.allowedFallbackModels, [
+    {
+      provider: "proxy",
+      model: "claude-opus-5",
+      cost: byId.get("claude-opus-5")?.cost,
+    },
+  ]);
+  // Anthropic permits only Pi's listed targets for Fable 5.2, so an offered Opus 5.5 is refused.
+  assert.deepEqual(warnings("claude-fable-5-2"), [
+    "compat promptCacheKeyMode ignored for this API",
+    "fallback claude-opus-5-5 ignored: not a permitted fallback in this route's Pi catalog entry",
+  ]);
+
+  // A permitted target that the route cannot use is refused with the reason.
+  const incompatible = resolveCatalog(
+    [{ id: "claude-fable-5-2" }, { id: "claude-opus-5" }],
+    config({
+      "claude-fable-5-2": {
+        fallbackModels: ["claude-opus-5"],
+        compat: { supportsMidConvoEffort: true },
+      },
+    }),
+    bundledReference,
+  );
+  const [incompatibleFable] = incompatible.models;
+  assert.ok(
+    incompatibleFable && hasApi(incompatibleFable, "anthropic-messages"),
+  );
+  assert.equal(incompatibleFable.compat?.allowedFallbackModels, undefined);
+  assert.deepEqual(incompatible.routes[0]?.warnings, [
+    "fallback claude-opus-5 ignored: lacks supportsMidConvoEffort, which this route uses",
+  ]);
+  // The referenced catalog entry has a lifetime; the route did not confirm one.
+  assert.equal(byId.get("claude-opus-5")?.promptCache, undefined);
+
+  const sol = byId.get("gpt-6.1-sol");
+  assert.ok(sol && hasApi(sol, "openai-responses"));
+  assert.equal(sol.compat?.promptCacheKeyMode, "enabled");
+  assert.equal(sol.promptCache, undefined);
+  assert.match(
+    warnings("gpt-6.1-sol").join(),
+    /fallbackModels ignored for this API,compat supportsMessageThreads ignored/,
+  );
 });
 
 test("persisted catalogs keep their endpoint and credential scope and reject mixed entries", () => {

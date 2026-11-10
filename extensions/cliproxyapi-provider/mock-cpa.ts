@@ -2,10 +2,14 @@
  * Local CLIProxyAPI stand-in for tests. It follows CPA's documented WebSocket behavior for HTTP
  * upstreams: per connection it keeps the last request and response output, expands
  * `previous_response_id` requests to the full input, and merges a later request without
- * assistant items into the stale history. Nothing here describes what CPA's upstreams do.
+ * assistant items into the stale history. For Anthropic Messages it keeps message threads the
+ * way Anthropic documents them: `create` stores the conversation with its reply, and `continue`
+ * appends the new messages to the stored one, once per reply. Nothing here describes what CPA's
+ * upstreams do.
  */
 import {
   createServer,
+  type IncomingHttpHeaders,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
@@ -23,10 +27,11 @@ export interface RecordedRequest {
   readonly transport: "websocket" | "sse" | "anthropic";
   readonly connection?: number;
   readonly delta: boolean;
-  /** The input CPA would send upstream after its own merge. */
+  /** The input CPA would send upstream after its own merge, or the thread's full conversation. */
   readonly merged: readonly unknown[];
   readonly body: Json;
   readonly path: string;
+  readonly headers?: IncomingHttpHeaders;
 }
 
 export interface Faults {
@@ -40,6 +45,12 @@ export interface Faults {
   forgetContinuation?: boolean;
   /** Never answer the next request. */
   stall?: boolean;
+  /** Reject the next Anthropic thread `continue` with `thread_not_found`. */
+  threadNotFound?: boolean;
+  /** Reject the next `continue` like CPA does itself when it lost a thread's tool-name state. */
+  cpaThreadStateLost?: boolean;
+  /** Answer the next Anthropic request as this model, like a server-side refusal fallback. */
+  fallbackModel?: string;
 }
 
 export interface MockCpa {
@@ -168,17 +179,17 @@ export function responseEvents(reply: Reply): {
   return { events, output, id };
 }
 
-function anthropicEvents(text: string): string {
+function anthropicEvents(id: string, model: string, text: string): string {
   const frames: [string, Json][] = [
     [
       "message_start",
       {
         type: "message_start",
         message: {
-          id: "msg_a1",
+          id,
           type: "message",
           role: "assistant",
-          model: "claude",
+          model,
           content: [],
           stop_reason: null,
           usage: {
@@ -262,6 +273,22 @@ export async function startMockCpa(options: {
     response.end(JSON.stringify(value));
   };
 
+  /** Reply id -> the thread's settings and full conversation including that reply. */
+  const threads = new Map<
+    string,
+    { system: unknown; tools: unknown; messages: readonly unknown[] }
+  >();
+  let replies = 0;
+  const threadError = (response: ServerResponse, code: string) =>
+    json(response, 404, {
+      type: "error",
+      error: {
+        type: "not_found_error",
+        message: `thread rejected: ${code}`,
+        details: { error_code: code },
+      },
+    });
+
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (request.method === "GET" && url.pathname === "/v1/models")
@@ -296,16 +323,61 @@ export async function startMockCpa(options: {
     if (request.method === "POST" && url.pathname === "/v1/messages") {
       const body = await readBody(request);
       const messages = Array.isArray(body.messages) ? body.messages : [];
+      const thread = isJson(body.thread) ? body.thread : undefined;
+      let base: {
+        system: unknown;
+        tools: unknown;
+        messages: readonly unknown[];
+      } = { system: body.system, tools: body.tools, messages: [] };
+      if (thread?.type === "continue") {
+        const previous = String(thread.previous_message_id);
+        const stored = threads.get(previous);
+        if (mock.faults.cpaThreadStateLost) {
+          delete mock.faults.cpaThreadStateLost;
+          // claude_executor_tool_state.go in CPA 8.0.64, sent before any upstream request.
+          return json(response, 404, {
+            type: "error",
+            error: {
+              type: "not_found_error",
+              message:
+                "No thread state was found for the requested previous_message_id. Replay the full conversation with thread create to start a new Thread.",
+            },
+          });
+        }
+        if (mock.faults.threadNotFound || !stored) {
+          delete mock.faults.threadNotFound;
+          return threadError(response, "thread_not_found");
+        }
+        // A reply can be continued once.
+        threads.delete(previous);
+        base = stored;
+      }
+      const merged = [...base.messages, ...messages];
       mock.requests.push({
         transport: "anthropic",
-        delta: false,
-        merged: messages,
+        delta: thread?.type === "continue",
+        merged,
         body,
         path: url.pathname,
+        headers: request.headers,
       });
-      const reply = options.reply(messages, body);
+      const reply = options.reply(merged, { ...body, system: base.system });
+      const id = `msg_a${++replies}`;
+      const text = reply.text ?? "";
+      if (thread) {
+        threads.set(id, {
+          system: base.system,
+          tools: base.tools,
+          messages: [
+            ...merged,
+            { role: "assistant", content: [{ type: "text", text }] },
+          ],
+        });
+      }
+      const model = mock.faults.fallbackModel ?? String(body.model);
+      delete mock.faults.fallbackModel;
       response.writeHead(200, { "content-type": "text/event-stream" });
-      return response.end(anthropicEvents(reply.text ?? ""));
+      return response.end(anthropicEvents(id, model, text));
     }
     json(response, 404, { error: { message: `no route ${url.pathname}` } });
   });

@@ -67,7 +67,9 @@ A route can set:
 | `api` | `openai-responses` or `anthropic-messages`. Required for ids that are not inferred. |
 | `metadata` | Pi catalog entry to enrich from, such as `openai/gpt-6.1-sol`. `null` turns enrichment off. |
 | `name`, `contextWindow`, `maxTokens`, `input`, `reasoning`, `thinkingLevelMap`, `cost` | Corrections with Pi's model field meanings. |
-| `compat` | Pi compatibility flags for the route's API, such as `supportsMidConvoEffort`. |
+| `promptCache` | Prompt cache lifetime in seconds per retention tier, such as `{ "long": 3600 }`. Pi warms only tiers listed here. On Claude routes, requests of a listed tier keep Pi's cache markers (see [Prompt cache lifetime](#prompt-cache-lifetime)). |
+| `fallbackModels` | Claude only. Up to three CPA Claude routes Anthropic may answer with after a refusal. |
+| `compat` | Pi compatibility settings for the route's API, such as `supportsMidConvoEffort` or `promptCacheKeyMode`. Settings for the other API are ignored with a warning. |
 
 ## Model list and metadata
 
@@ -93,7 +95,8 @@ Fields that no source provides stay conservative: text only, no reasoning, 12800
 This is common for aliases without a catalog entry. `/proxy models` warns about unverified default limits. A price of 0 does not mean free, and catalog prices are estimates, not CPA billing.
 
 From a catalog entry, only flags describing the request shape are taken, such as strict tools and adaptive thinking.
-Mid-conversation features such as `configuration_update` stay off unless a route enables them in `compat`.
+Mid-conversation features such as `configuration_update`, message threads, session affinity, prompt cache lifetimes and refusal fallbacks stay off unless a route enables them.
+The catalog describes Anthropic's and OpenAI's own endpoints, and CPA can change cache markers and model ids on the way.
 
 ## Cache
 
@@ -116,11 +119,70 @@ Pi keeps the full history. Continuation only saves sending it again.
 - If CPA may have received a request, the extension reports the failure instead of resending it. Pi's own retry policy still applies.
 - Idle connections close after 5 minutes. Aborts, `/reload` and session shutdown close them.
 - Pi's `transport: "sse"` setting, a model with a different `baseUrl`, and requests without a session id use HTTP.
+- Requests with `disableContinuation`, such as Pi's cache-warming replays, use HTTP with the full input. The session's connection and continuation stay as the last real turn left them.
 
 Request hooks work as usual. For WebSocket requests, `onResponse` sees a synthetic `200 text/event-stream` response, not the handshake headers.
 
 Continuation applies between Pi and CPA. How CPA reaches the upstream service is CPA's decision.
 For HTTP upstreams, CPA expands each continuation back to the full history.
+
+## Claude routes
+
+Pi's Anthropic adapter builds every Claude request. A route opts into the features that CPA and its upstream support. This route enables everything for Claude Fable 5.2:
+
+```json
+{
+  "routes": {
+    "claude-fable-5-2": {
+      "promptCache": { "long": 3600 },
+      "fallbackModels": ["claude-opus-5"],
+      "compat": {
+        "supportsMidConvoEffort": true,
+        "supportsMidConvoSystemMessages": true,
+        "supportsMidConvoToolChanges": true,
+        "supportsMessageThreads": true,
+        "sendSessionAffinityHeaders": true
+      }
+    },
+    "claude-opus-5": { "compat": { "supportsMidConvoEffort": true } }
+  }
+}
+```
+
+- `supportsMidConvoEffort` sends thinking-level changes as effort markers in the conversation and sets `thinking.block_binding.prefix_mismatch_behavior: "drop_block"`. Fable 5.2 rejects edited history with a 400 error without it.
+- `supportsMidConvoSystemMessages` and `supportsMidConvoToolChanges` send system prompt and tool changes in place instead of rewriting the start of the conversation.
+- `supportsMessageThreads` lets a turn send only its new messages. Pi starts a new thread with the full history after any change to earlier messages, the system prompt or tools, and when Anthropic or CPA rejects the thread. CPA's own rejection, sent when a cloaked credential lost its tool-name state for the thread, is a 404 without Anthropic's error code; the extension adds `thread_not_found` to that exact response so Pi resends the conversation once.
+- `sendSessionAffinityHeaders` sends the session id as `x-session-affinity`, which CPA uses to keep a session on one credential.
+
+### Prompt cache lifetime
+
+Without `promptCache`, Pi does not warm the route's cache and CPA decides cache markers and their lifetimes. On cloaked credentials, such as Claude OAuth, CPA changes Pi's five-minute markers to one hour. On credentials with `cloak: never`, they stay five minutes.
+
+`promptCache` does not choose a lifetime. Pi's cache retention does: the default short retention writes five-minute markers, and long retention (`PI_CACHE_RETENTION=long`) writes one-hour markers. `promptCache` states how long the entries of each tier last on this route, so Pi can warm them before they expire. For Anthropic these are 300 seconds for `short` and 3600 seconds for `long`.
+
+A request whose retention tier is listed in `promptCache` also carries `prompt_cache_options: { "mode": "explicit" }`. CPA then keeps Pi's markers as written and removes the field before the upstream request. A request with `cacheRetention: "none"` carries it too, so CPA does not add markers that Pi left out. Requests of a tier that is not listed are sent as before, and CPA keeps handling their markers. The same rules apply when `models.json` sets `promptCache` for the model through `modelOverrides`.
+
+Choose the tiers by the cache you want:
+
+| `promptCache` | Short retention (default) | Long retention |
+|---|---|---|
+| not set | CPA decides: one hour on cloaked credentials, five minutes otherwise. Not warmed. | CPA decides. Not warmed. |
+| `{ "long": 3600 }` (recommended) | Same as not set. | One hour as written by Pi, warmed. |
+| `{ "short": 300, "long": 3600 }` | Five minutes as written by Pi, warmed. | One hour as written by Pi, warmed. |
+
+Add `short` only if you want five-minute entries that Pi keeps warm. On a cloaked credential, this replaces the one-hour entries CPA would otherwise write. Pi keeps the shorter entries warm with extra one-token requests while it estimates that they pay off. These requests are billed as cache reads and count against the credential's quota.
+
+The field is added before Pi's `before_provider_request` hooks run, so they see and can change it. This was verified against CPA 8.0.48 and 8.0.64 source and executor tests, not against Anthropic.
+
+### Refusal fallbacks
+
+`fallbackModels` lists other CPA routes Anthropic may answer with when the model refuses. Pi sends them as Anthropic's `fallbacks` field and prices a fallback reply with the fallback route's price. A target is used only when:
+
+- Pi's catalog entry for the route lists it as a permitted fallback (Fable 5.2: `claude-opus-5`),
+- CPA offers it as a Claude route with a known price,
+- and it supports effort markers when the route uses them.
+
+Ignored targets appear as warnings in `/proxy models`. Credential fallback inside CPA is unrelated to this setting.
 
 ## Commands
 
@@ -136,6 +198,7 @@ Without an interactive UI, the commands write to stderr.
 
 - First-use discovery before model selection needs the key in the environment. If there is no cached catalog yet and the key is only stored, Pi needs another available model to finish startup before the background check can discover CPA models.
 - `pi update --models` does not load extensions, so it does not refresh this provider.
+- Message threads and refusal fallbacks need the route id to be the upstream model id. CPA reports a different model id for aliases, which Pi treats as a fallback reply: it does not continue the thread and, for force-mapped aliases, cannot see a real fallback.
 
 ## Development
 

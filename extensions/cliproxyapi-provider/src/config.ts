@@ -3,6 +3,7 @@ import path from "node:path";
 import type {
   AnthropicMessagesCompat,
   ModelCost,
+  ModelPromptCache,
   OpenAIResponsesCompat,
   ThinkingLevelMap,
 } from "@earendil-works/pi-ai";
@@ -16,7 +17,8 @@ export const DEFAULT_API_KEY_ENV = "CLIPROXYAPI_API_KEY";
 export const ROUTE_APIS = ["openai-responses", "anthropic-messages"] as const;
 export type RouteApi = (typeof ROUTE_APIS)[number];
 
-export const RESPONSES_COMPAT_FLAGS = [
+/** Route-configurable compat keys per API. Values are booleans except `promptCacheKeyMode`. */
+export const RESPONSES_COMPAT_KEYS = [
   "supportsDeveloperRole",
   "supportsMidConvoSystemMessages",
   "supportsLongCacheRetention",
@@ -27,9 +29,10 @@ export const RESPONSES_COMPAT_FLAGS = [
   "supportsExplicitPromptCacheMode",
   "supportsMidConvoEffort",
   "supportsMaxOutputTokens",
+  "promptCacheKeyMode",
 ] as const satisfies readonly (keyof OpenAIResponsesCompat)[];
 
-export const ANTHROPIC_COMPAT_FLAGS = [
+export const ANTHROPIC_COMPAT_KEYS = [
   "supportsEagerToolInputStreaming",
   "supportsLongCacheRetention",
   "supportsCacheControlOnTools",
@@ -40,11 +43,24 @@ export const ANTHROPIC_COMPAT_FLAGS = [
   "supportsMidConvoEffort",
   "supportsMidConvoSystemMessages",
   "supportsMidConvoToolChanges",
+  "supportsMessageThreads",
+  "sendSessionAffinityHeaders",
 ] as const satisfies readonly (keyof AnthropicMessagesCompat)[];
 
-type CompatFlag =
-  | (typeof RESPONSES_COMPAT_FLAGS)[number]
-  | (typeof ANTHROPIC_COMPAT_FLAGS)[number];
+const PROMPT_CACHE_KEY_MODES = [
+  "auto",
+  "enabled",
+  "disabled",
+] as const satisfies readonly NonNullable<
+  OpenAIResponsesCompat["promptCacheKeyMode"]
+>[];
+
+type CompatKey =
+  | (typeof RESPONSES_COMPAT_KEYS)[number]
+  | (typeof ANTHROPIC_COMPAT_KEYS)[number];
+
+/** Pi allows at most three server-side fallback models per request. */
+const MAX_FALLBACK_MODELS = 3;
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0));
 const Price = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
@@ -74,14 +90,28 @@ const CostSchema = Schema.Struct({
 });
 
 const compatFlag = Schema.optionalKey(Schema.Boolean);
-const compatFields = Object.fromEntries(
-  [
-    ...new Set<CompatFlag>([
-      ...RESPONSES_COMPAT_FLAGS,
-      ...ANTHROPIC_COMPAT_FLAGS,
-    ]),
-  ].map((flag) => [flag, compatFlag]),
-) as Record<CompatFlag, typeof compatFlag>;
+const compatFields = {
+  ...(Object.fromEntries(
+    [
+      ...new Set<CompatKey>([
+        ...RESPONSES_COMPAT_KEYS,
+        ...ANTHROPIC_COMPAT_KEYS,
+      ]),
+    ]
+      .filter((key) => key !== "promptCacheKeyMode")
+      .map((flag) => [flag, compatFlag]),
+  ) as Record<Exclude<CompatKey, "promptCacheKeyMode">, typeof compatFlag>),
+  promptCacheKeyMode: Schema.optionalKey(
+    Schema.Literals(PROMPT_CACHE_KEY_MODES),
+  ),
+};
+
+const Seconds = Schema.Finite.check(Schema.isGreaterThan(0));
+/** Pi's `ModelPromptCache`, with at least one tier so a present value always means something. */
+const PromptCacheSchema = Schema.Struct({
+  short: Schema.optionalKey(Seconds),
+  long: Schema.optionalKey(Seconds),
+}).check(Schema.isMinProperties(1));
 
 const RouteSchema = Schema.Struct({
   api: Schema.optionalKey(Schema.Literals(ROUTE_APIS)),
@@ -94,6 +124,18 @@ const RouteSchema = Schema.Struct({
   reasoning: Schema.optionalKey(Schema.Boolean),
   thinkingLevelMap: Schema.optionalKey(ThinkingLevelMapSchema),
   cost: Schema.optionalKey(CostSchema),
+  /**
+   * Prompt cache lifetime in seconds as this route actually keeps it. Never taken from a catalog
+   * entry: CPA may rewrite cache markers, so only the operator can vouch for the lifetime.
+   */
+  promptCache: Schema.optionalKey(PromptCacheSchema),
+  /** Other CPA Claude routes Anthropic may answer with after a refusal. */
+  fallbackModels: Schema.optionalKey(
+    Schema.Array(Schema.String).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(MAX_FALLBACK_MODELS),
+    ),
+  ),
   compat: Schema.optionalKey(Schema.Struct(compatFields)),
 });
 
@@ -118,6 +160,10 @@ export const toModelCost = (cost: typeof CostSchema.Type): ModelCost => ({
 export const toThinkingLevelMap = (
   map: typeof ThinkingLevelMapSchema.Type,
 ): ThinkingLevelMap => ({ ...map });
+
+export const toPromptCache = (
+  promptCache: typeof PromptCacheSchema.Type,
+): ModelPromptCache => ({ ...promptCache });
 
 export interface ProxyConfig {
   readonly path: string;

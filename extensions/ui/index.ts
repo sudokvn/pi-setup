@@ -16,6 +16,7 @@ import { askUserRow } from "./ask-user.ts";
 import { codemodeRow } from "./codemode.ts";
 import { compactToolRows } from "./tool-rows.ts";
 import { fitFooterLine, type FooterSegment } from "./footer-layout.ts";
+import { createBranchCostReader } from "./session-cost.ts";
 import { markTranscriptRoles } from "./transcript.ts";
 import { registerVcsInfo } from "./vcs/index.ts";
 import { emptyVcsInfoState, type VcsInfoState } from "./vcs/state.ts";
@@ -26,7 +27,6 @@ interface ModelInfo {
   thinking: string;
   contextTokens: number | null;
   contextPercent: number | null;
-  cost: number;
 }
 
 // eslint-disable-next-line no-control-regex
@@ -63,24 +63,13 @@ function formatTokens(tokens: number) {
   return `${(tokens / 1_000_000).toFixed(1)}M`;
 }
 
-function getSessionCost(ctx: ExtensionContext) {
-  let cost = 0;
-  for (const entry of ctx.sessionManager.getBranch()) {
-    if (entry.type === "message" && entry.message.role === "assistant") {
-      cost += entry.message.usage.cost.total;
-    }
-  }
-  return cost;
-}
-
 function modelInfoEqual(left: ModelInfo, right: ModelInfo) {
   return (
     left.provider === right.provider &&
     left.modelId === right.modelId &&
     left.thinking === right.thinking &&
     left.contextTokens === right.contextTokens &&
-    left.contextPercent === right.contextPercent &&
-    left.cost === right.cost
+    left.contextPercent === right.contextPercent
   );
 }
 
@@ -100,8 +89,10 @@ export default function ui(
     thinking: "off",
     contextTokens: null,
     contextPercent: null,
-    cost: 0,
   };
+  // Cost is read at render time: background cache warming appends usage and
+  // requests a render without emitting an extension event.
+  const readBranchCost = createBranchCostReader();
   let vcsInfo = emptyVcsInfoState();
   let requestRender: (() => void) | undefined;
 
@@ -114,7 +105,6 @@ export default function ui(
       thinking: model?.reasoning ? pi.getThinkingLevel() : "off",
       contextTokens: usage?.tokens ?? null,
       contextPercent: usage?.percent ?? null,
-      cost: getSessionCost(ctx),
     };
     if (modelInfoEqual(modelInfo, next)) return;
     modelInfo = next;
@@ -244,9 +234,10 @@ export default function ui(
               dropAt: 95,
             });
           }
-          if (modelInfo.cost > 0) {
+          const cost = readBranchCost(ctx.sessionManager);
+          if (cost > 0) {
             right.push({
-              text: theme.fg("muted", `$${modelInfo.cost.toFixed(2)}`),
+              text: theme.fg("muted", `$${cost.toFixed(2)}`),
               dropAt: 80,
             });
           }

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import {
   createAssistantMessageEventStream,
+  getPromptCacheTtlMs,
   hasApi,
   type ApiKeyAuth,
   type AssistantMessageEventStream,
@@ -181,6 +182,99 @@ function errorStream(
   });
   stream.end();
   return stream;
+}
+
+/**
+ * CPA's client-owned cache mode for a Claude request whose cache lifetime Pi relies on. Without
+ * it, CPA may place its own markers or turn Pi's bare (five-minute) markers into one-hour ones, so
+ * the lifetime Pi warms for would not be the one Anthropic applies. CPA reads
+ * `prompt_cache_options.mode` and removes the field before the upstream request.
+ *
+ * Only requests whose retention tier has a configured lifetime are marked. A route configured
+ * with only `long` therefore keeps CPA's own handling for short retention, which on cloaked
+ * credentials is a one-hour cache. A deliberate `cacheRetention: "none"` is marked too, so CPA
+ * does not add markers Pi left out.
+ *
+ * The marker is added before the caller's hook runs, so request hooks see the payload as sent and
+ * can still replace it.
+ */
+function withClientOwnedCache(
+  model: Model<"anthropic-messages">,
+  options: StreamOptions | undefined,
+): StreamOptions | undefined {
+  const clientOwned =
+    model.promptCache !== undefined &&
+    (options?.cacheRetention === "none" ||
+      getPromptCacheTtlMs(model, options) !== undefined);
+  if (!clientOwned) return options;
+  const caller = options?.onPayload;
+  return {
+    ...options,
+    onPayload: async (payload, hookModel) => {
+      const marked =
+        typeof payload === "object" && payload !== null
+          ? { ...payload, prompt_cache_options: { mode: "explicit" } }
+          : payload;
+      // Like Pi, only `undefined` keeps the payload; any other value, even `null`, replaces it.
+      const replaced = await caller?.(marked, hookModel);
+      return replaced === undefined ? marked : replaced;
+    },
+  };
+}
+
+/** CPA's own answer to a thread `continue` when it lost the thread's tool-name state. */
+const CPA_THREAD_STATE_LOST =
+  "No thread state was found for the requested previous_message_id. Replay the full conversation with thread create to start a new Thread.";
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const isCpaThreadStateLost = (body: unknown): boolean =>
+  isRecord(body) &&
+  isRecord(body.error) &&
+  body.error.type === "not_found_error" &&
+  body.error.message === CPA_THREAD_STATE_LOST &&
+  body.error.details === undefined;
+
+/**
+ * CPA rejects such a `continue` itself, before contacting Anthropic, with a 404 that lacks the
+ * `error_code` Anthropic puts on its own thread rejections. Adding `thread_not_found` lets Pi's
+ * adapter resend the full conversation as a new thread once, as it does for Anthropic. Every
+ * other response passes through untouched.
+ */
+function withCpaThreadErrors(
+  model: Model<"anthropic-messages">,
+  options: StreamOptions | undefined,
+): StreamOptions | undefined {
+  if (model.compat?.supportsMessageThreads !== true) return options;
+  const send = options?.fetch ?? globalThis.fetch;
+  return {
+    ...options,
+    fetch: async (input, init) => {
+      const response = await send(input, init);
+      if (response.status !== 404) return response;
+      const body: unknown = await response
+        .clone()
+        .json()
+        .catch(() => undefined);
+      if (!isCpaThreadStateLost(body)) return response;
+      await response.body?.cancel();
+      const headers = new Headers(response.headers);
+      headers.delete("content-length");
+      headers.delete("content-encoding");
+      return Response.json(
+        {
+          type: "error",
+          error: {
+            type: "not_found_error",
+            message: CPA_THREAD_STATE_LOST,
+            details: { error_code: "thread_not_found" },
+          },
+        },
+        { status: 404, headers },
+      );
+    },
+  };
 }
 
 function failureMessage(exit: Exit.Failure<Discovery, DiscoveryError>): string {
@@ -386,9 +480,13 @@ export function createProxyProvider(config: ProxyConfig): ProxyProvider {
     simple: boolean,
   ): AssistantMessageEventStream => {
     if (hasApi(model, "anthropic-messages")) {
+      const cached = withCpaThreadErrors(
+        model,
+        withClientOwnedCache(model, options),
+      );
       return simple
-        ? anthropic.streamSimple(model, context, options)
-        : anthropic.stream(model, context, options);
+        ? anthropic.streamSimple(model, context, cached)
+        : anthropic.stream(model, context, cached);
     }
     if (hasApi(model, "openai-responses")) {
       return simple

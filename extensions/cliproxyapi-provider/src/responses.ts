@@ -830,10 +830,14 @@ export function createResponsesTransport(settings: {
     start: (options: O | undefined) => AssistantMessageEventStream,
   ): AssistantMessageEventStream => {
     const sessionId = options?.sessionId;
+    // `disableContinuation` marks a side request, such as a cache-warming replay of the last
+    // request. It goes over HTTP with its full input, so the session's connection and
+    // continuation stay exactly as the last real turn left them.
     if (
       !options ||
       !settings.websocket ||
       options.transport === "sse" ||
+      options.disableContinuation === true ||
       !sessionId
     ) {
       return start(options);

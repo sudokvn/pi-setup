@@ -1,6 +1,6 @@
 # Subagent profile design
 
-Status: **Implemented in source; live validation pending.** Updated: 2026-09-19.
+Status: **Implemented in source; live validation pending.** Updated: 2026-11-10.
 
 This document records the eight-profile design. The implementation is described in [Subagents architecture](design-plan.md), with executable configuration in [profiles.ts](../src/profiles.ts). Installed behavior changes only after release and deployment.
 
@@ -10,7 +10,7 @@ The design has eight profiles. `research` absorbs the former `analyst` responsib
 
 Each profile has one primary model and no automatic fallback. **GLM-5.3-Flash · high is the selected `code` model for now.** Model assignments remain subject to practical evaluation, not claims of measured superiority.
 
-Model shorthand: Astra means GPT-6 Astra, Luna means GPT-5.6 Luna, Sol means GPT-5.6 Sol, Sol Fast means GPT-6.1 Sol Fast, Opus means Claude Opus 5.5 and Fable means Claude Fable 5.1. Each model is followed by its requested reasoning effort. These are display labels; exact provider configuration strings are recorded in the architecture document and executable configuration.
+Model shorthand: Astra means GPT-6 Astra, Luna means GPT-5.6 Luna, Sol means GPT-5.6 Sol, Sol Fast means GPT-6.1 Sol Fast, Opus means Claude Opus 5.5 and Fable means Claude Fable 5.2. Each model is followed by its requested reasoning effort. These are display labels; exact provider configuration strings are recorded in the architecture document and executable configuration.
 
 | Profile      | Primary model            | Description                                                                                                      | When to use                                                                                                                                            |
 | ------------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -162,7 +162,7 @@ Personal configuration identifies applicable author guidance, such as a `WRITING
 
 ## Agreed contract: ui
 
-Primary: **Fable 5.1 · high**.
+Primary: **Fable 5.2 · high**.
 
 | Detail               | `ui`                                                                                                                                                                                                           |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

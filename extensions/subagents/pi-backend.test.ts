@@ -30,6 +30,8 @@ async function fixture(
   t: TestContext,
   responses: readonly Response[],
   compaction = { enabled: true, keepRecentTokens: 20_000 },
+  /** Give the test model a prompt cache this short so Pi's real warmer refreshes it within a second. */
+  cacheWarmTtlSeconds?: number,
 ) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-backend-"));
   const previous = {
@@ -42,7 +44,11 @@ async function fixture(
   process.env.PI_OFFLINE = "1";
   fs.writeFileSync(
     path.join(root, "settings.json"),
-    JSON.stringify({ compaction, retry: { enabled: false } }),
+    JSON.stringify({
+      compaction,
+      retry: { enabled: false },
+      ...(cacheWarmTtlSeconds ? { cacheWarming: "idle" } : {}),
+    }),
   );
   const createRuntime = () =>
     ManagedRuntime.make(
@@ -138,6 +144,7 @@ async function fixture(
   const registry = new ModelRegistry(models);
   const model = registry.getAll().find((m) => m.provider === "openai");
   assert.ok(model);
+  if (cacheWarmTtlSeconds) model.promptCache = { short: cacheWarmTtlSeconds };
   const parent = {
     parentCwd: root,
     parentSessionId: "backend-test",
@@ -156,6 +163,20 @@ async function fixture(
   };
   return {
     requests: () => requests,
+    /** Resolves with the snapshot after the run's recorded cost next changes. */
+    nextCostChange(id: string) {
+      const before = manager.view.get(id)?.usage.costUsd;
+      return new Promise<NonNullable<ReturnType<typeof manager.view.get>>>(
+        (resolve) => {
+          const unsubscribe = manager.view.subscribeTo(id, () => {
+            const snapshot = manager.view.get(id);
+            if (!snapshot || snapshot.usage.costUsd === before) return;
+            unsubscribe();
+            resolve(snapshot);
+          });
+        },
+      );
+    },
     async abort() {
       assert.ok(childSession);
       await childSession.abort();
@@ -240,6 +261,52 @@ test("Pi persists the final response usage, including after artifact continuatio
   assert.deepEqual(receipt.usage, resumed.usage);
   assert.equal(f.requests(), 2);
 });
+
+test(
+  "Pi reports cache-warm cost a retained child records after settlement",
+  { timeout: 10_000 },
+  async (t) => {
+    const usage = (
+      tokens: Pick<AssistantMessage["usage"], "input" | "cacheRead">,
+      total: number,
+    ) => ({
+      ...tokens,
+      output: 1,
+      cacheWrite: 0,
+      totalTokens: tokens.input + tokens.cacheRead + 1,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total },
+    });
+    // A large prompt makes idle warming economical under Pi's real decision.
+    const f = await fixture(
+      t,
+      [
+        { text: "Done.", usage: usage({ input: 1_000_000, cacheRead: 0 }, 1) },
+        { usage: usage({ input: 0, cacheRead: 1_000_000 }, 0.5) },
+      ],
+      { enabled: false, keepRecentTokens: 20_000 },
+      11,
+    );
+    const settled = await f.spawn("Complete the fixture task.");
+    assert.equal(settled.status, "done", settled.errorText ?? "Run failed");
+    assert.equal(settled.usage.costUsd, 1);
+
+    const warmed = await f.nextCostChange(settled.id);
+    assert.equal(f.requests(), 2, "the change comes from one warm request");
+    assert.equal(warmed.status, "done");
+    assert.equal(warmed.usage.costUsd, 1.5);
+    assert.equal(warmed.usage.cacheReadTokens, 1_000_000);
+    assert.ok(warmed.meta.sessionFilePath);
+    const entries = SessionManager.open(
+      warmed.meta.sessionFilePath,
+    ).getEntries();
+    assert.equal(
+      entries.filter(
+        (entry) => entry.type === "usage" && entry.kind === "cache_warm",
+      ).length,
+      1,
+    );
+  },
+);
 
 const OVERFLOW = "maximum context length exceeded";
 const SUMMARY = "The user wants the fixture task completed.";

@@ -13,9 +13,10 @@ import {
 } from "@earendil-works/pi-ai";
 import { Schema } from "effect";
 import {
-  ANTHROPIC_COMPAT_FLAGS,
-  RESPONSES_COMPAT_FLAGS,
+  ANTHROPIC_COMPAT_KEYS,
+  RESPONSES_COMPAT_KEYS,
   toModelCost,
+  toPromptCache,
   toThinkingLevelMap,
   type ProxyConfig,
   type RouteApi,
@@ -101,9 +102,10 @@ const PI_LEVELS = [
 
 /**
  * Compat flags taken from a referenced catalog entry. They describe the model's request shape.
- * Mid-conversation features (configuration_update, in-place system/tool changes), tool search,
- * grammar tools and vendor fallbacks depend on the proxy route, so a route must enable them
- * explicitly.
+ * Mid-conversation features (configuration_update, in-place system/tool changes), message
+ * threads, session affinity, tool search, grammar tools and vendor fallbacks depend on the proxy
+ * route, so a route must enable them explicitly. Prompt cache lifetimes are never inherited
+ * either: CPA can rewrite cache markers, so the reference's lifetime may not hold.
  */
 const INHERITED_RESPONSES_FLAGS = [
   "supportsDeveloperRole",
@@ -321,6 +323,8 @@ function resolveRoute(
     warnings.push("no price data; cost shows 0, which does not mean free");
   if (contextSource === "default")
     warnings.push("context and output limits are unverified defaults");
+  if (isResponses && route?.fallbackModels)
+    warnings.push("fallbackModels ignored for this API");
 
   const name = route?.name ?? cpa?.name ?? reference?.name ?? discovered.id;
   const inputLimits = input.includes("image")
@@ -337,6 +341,9 @@ function resolveRoute(
     cost: { ...cost, tiers: cost.tiers?.map((tier) => ({ ...tier })) },
     contextWindow,
     maxTokens,
+    ...(route?.promptCache
+      ? { promptCache: toPromptCache(route.promptCache) }
+      : {}),
   };
 
   const model: RouteModel = isResponses
@@ -357,7 +364,7 @@ function resolveRoute(
               : undefined,
             INHERITED_RESPONSES_FLAGS,
           ),
-          ...routeCompatFor(route?.compat, RESPONSES_COMPAT_FLAGS, warnings),
+          ...routeCompatFor(route?.compat, RESPONSES_COMPAT_KEYS, warnings),
         },
       }
     : {
@@ -372,7 +379,7 @@ function resolveRoute(
               : undefined,
             INHERITED_ANTHROPIC_FLAGS,
           ),
-          ...routeCompatFor(route?.compat, ANTHROPIC_COMPAT_FLAGS, warnings),
+          ...routeCompatFor(route?.compat, ANTHROPIC_COMPAT_KEYS, warnings),
         },
       };
 
@@ -428,10 +435,95 @@ export function resolveCatalog(
     routes.push(resolved.info);
   }
 
+  // Fallbacks refer to other resolved routes, so they are attached once every route is known.
+  const byId = new Map(
+    models.map((model, index) => [model.id, { model, info: routes[index] }]),
+  );
+  models.forEach((model, index) => {
+    const ids = config.routes[model.id]?.fallbackModels;
+    const info = routes[index];
+    if (!ids || !info || !hasApi(model, "anthropic-messages")) return;
+    const parts = info.reference ? splitReference(info.reference) : undefined;
+    const reference = parts ? lookup(parts[0], parts[1]) : undefined;
+    const permitted = new Set(
+      reference && hasApi(reference, "anthropic-messages")
+        ? (reference.compat?.allowedFallbackModels ?? []).map(
+            (fallback) => fallback.model,
+          )
+        : [],
+    );
+    const { allowed, warnings } = resolveFallbacks(model, ids, permitted, byId);
+    if (allowed.length > 0) {
+      models[index] = {
+        ...model,
+        compat: { ...model.compat, allowedFallbackModels: allowed },
+      };
+    }
+    if (warnings.length > 0)
+      routes[index] = { ...info, warnings: [...info.warnings, ...warnings] };
+  });
+
   const warnings = Object.keys(config.routes)
     .filter((id) => !seen.has(id))
     .map((id) => `route ${id} is configured but CPA does not offer it`);
   return { models, routes, hidden, warnings };
+}
+
+type AllowedFallbackModel = NonNullable<
+  AnthropicMessagesCompat["allowedFallbackModels"]
+>[number];
+
+/**
+ * Fallback targets as Pi's Anthropic adapter expects them: Pi sends them as the native
+ * `fallbacks` field and prices a reply by the entry whose provider and id match the returned
+ * model. The provider is therefore this proxy's id, and the price is the fallback route's own.
+ *
+ * Anthropic accepts only specific targets per model and rejects the field otherwise, so a target
+ * must also be listed by the route's Pi catalog entry (`permitted`).
+ */
+function resolveFallbacks(
+  primary: Model<"anthropic-messages">,
+  ids: readonly string[],
+  permitted: ReadonlySet<string>,
+  byId: ReadonlyMap<
+    string,
+    { readonly model: RouteModel; readonly info: RouteInfo | undefined }
+  >,
+): { allowed: AllowedFallbackModel[]; warnings: string[] } {
+  const allowed: AllowedFallbackModel[] = [];
+  const warnings: string[] = [];
+  for (const id of new Set(ids)) {
+    const reject = (reason: string) =>
+      warnings.push(`fallback ${id} ignored: ${reason}`);
+    const target = byId.get(id);
+    if (!permitted.has(id)) {
+      reject("not a permitted fallback in this route's Pi catalog entry");
+      continue;
+    }
+    if (!target || !hasApi(target.model, "anthropic-messages")) {
+      reject("is not an offered anthropic-messages route");
+      continue;
+    }
+    if (target.info?.sources.cost === "default") {
+      reject("has no price, so its replies would cost 0");
+      continue;
+    }
+    // Effort markers in the history would be rejected by a model without them.
+    if (
+      primary.compat?.supportsMidConvoEffort === true &&
+      target.model.compat?.supportsMidConvoEffort !== true
+    ) {
+      reject("lacks supportsMidConvoEffort, which this route uses");
+      continue;
+    }
+    const { cost } = target.model;
+    allowed.push({
+      provider: primary.provider,
+      model: id,
+      cost: { ...cost, tiers: cost.tiers?.map((tier) => ({ ...tier })) },
+    });
+  }
+  return { allowed, warnings };
 }
 
 // ---------------------------------------------------------------------------

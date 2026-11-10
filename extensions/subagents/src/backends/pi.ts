@@ -489,6 +489,18 @@ const makePiSession = (
             ],
           });
           break;
+        case "entry_appended":
+          // Cache warming and extension compactions record usage outside
+          // the response lifecycle, including after settlement while a retained
+          // child stays alive. Totals are absolute, so refreshing cannot double count.
+          if (
+            event.entry.type === "usage" ||
+            event.entry.type === "compaction" ||
+            event.entry.type === "branch_summary"
+          ) {
+            emitUsage();
+          }
+          break;
         case "agent_settled":
           // message_end listeners run before SDK persistence, so their session
           // totals omit that response. Refresh after persistence before settling.

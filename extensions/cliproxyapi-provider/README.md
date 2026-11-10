@@ -154,6 +154,8 @@ Pi's Anthropic adapter builds every Claude request. A route opts into the featur
 - `supportsMessageThreads` lets a turn send only its new messages. Pi starts a new thread with the full history after any change to earlier messages, the system prompt or tools, and when Anthropic or CPA rejects the thread. CPA's own rejection, sent when a cloaked credential lost its tool-name state for the thread, is a 404 without Anthropic's error code; the extension adds `thread_not_found` to that exact response so Pi resends the conversation once.
 - `sendSessionAffinityHeaders` sends the session id as `x-session-affinity`, which CPA uses to keep a session on one credential.
 
+For thread-enabled routes, requests carrying Pi's message-threads beta also retain `advanced-tool-use-2025-11-20`. CPA infers that beta from tool-search declarations but otherwise drops it when Pi omits unchanged tools on continuation, causing Anthropic to reject the changed thread fingerprint. The extension adds it after Pi generates headers, without replacing Pi's other betas. Explicit beta suppression and unthreaded routes stay unchanged.
+
 ### Prompt cache lifetime
 
 Without `promptCache`, Pi does not warm the route's cache and CPA decides cache markers and their lifetimes. On cloaked credentials, such as Claude OAuth, CPA changes Pi's five-minute markers to one hour. On credentials with `cloak: never`, they stay five minutes.

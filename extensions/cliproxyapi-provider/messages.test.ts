@@ -213,6 +213,7 @@ test("Fable 5.2 continues a message thread with effort markers, system and tool 
     const betas = String(request.headers?.["anthropic-beta"]).split(",");
     for (const beta of [
       THREADS_BETA,
+      "advanced-tool-use-2025-11-20",
       "mid-conversation-output-config-2026-07-01",
       "thinking-binding-controls-2026-08-01",
       "inline-tools-2026-09-15",
@@ -221,6 +222,70 @@ test("Fable 5.2 continues a message thread with effort markers, system and tool 
       assert.ok(betas.includes(beta), `${beta} in ${betas.join()}`);
     }
   }
+});
+
+test("thread beta pinning preserves header precedence and explicit beta suppression", async (t) => {
+  const f = await fixture(t);
+  const model = f.collection.getModel("proxy", FABLE);
+  assert.ok(model);
+  const cases: {
+    modelBeta: string;
+    requestBeta?: string | null;
+    expected: string[];
+  }[] = [
+    {
+      modelBeta: `model-beta,${THREADS_BETA}`,
+      expected: ["model-beta", THREADS_BETA, "advanced-tool-use-2025-11-20"],
+    },
+    {
+      modelBeta: `model-beta,${THREADS_BETA}`,
+      requestBeta: `request-beta,${THREADS_BETA}`,
+      expected: ["request-beta", THREADS_BETA, "advanced-tool-use-2025-11-20"],
+    },
+    {
+      modelBeta: `model-beta,${THREADS_BETA}`,
+      requestBeta: "request-only-beta",
+      expected: ["request-only-beta"],
+    },
+    {
+      modelBeta: `model-beta,${THREADS_BETA}`,
+      requestBeta: null,
+      expected: [],
+    },
+  ];
+  for (const [index, { modelBeta, requestBeta, expected }] of cases.entries()) {
+    const reply = await f.collection.completeSimple(
+      { ...model, headers: { "AnThRoPiC-BeTa": modelBeta, "x-model": "kept" } },
+      { messages: [user("first")] },
+      {
+        sessionId: `headers-${index}`,
+        headers: {
+          "x-request": "kept",
+          ...(requestBeta !== undefined
+            ? { "ANTHROPIC-BETA": requestBeta }
+            : {}),
+        },
+      },
+    );
+    assert.equal(reply.stopReason, "stop", reply.errorMessage);
+    const headers = f.last().headers;
+    assert.equal(headers?.["x-model"], "kept");
+    assert.equal(headers?.["x-request"], "kept");
+    if (expected.length === 0) {
+      assert.equal(headers?.["anthropic-beta"], undefined);
+    } else {
+      assert.deepEqual(
+        String(headers?.["anthropic-beta"]).split(","),
+        expected,
+      );
+    }
+  }
+  await f.turn([user("unthreaded")], {}, "claude-opus-5");
+  assert.ok(
+    !String(f.last().headers?.["anthropic-beta"])
+      .split(",")
+      .includes("advanced-tool-use-2025-11-20"),
+  );
 });
 
 test("Fable 5.2 resends the full history after an edit or a lost thread", async (t) => {
@@ -259,6 +324,11 @@ test("replays the full history once when CPA itself lost the thread state", asyn
   const a2 = await f.turn([u1, a1, user("second")]);
   assert.equal(text(a2), "seen: first | second");
   assert.deepEqual(f.last().body.thread, { type: "create" });
+  assert.ok(
+    String(f.last().headers?.["anthropic-beta"])
+      .split(",")
+      .includes("advanced-tool-use-2025-11-20"),
+  );
   assert.deepEqual(
     a2.diagnostics?.map((diagnostic) => diagnostic.type),
     ["anthropic_thread_fallback"],

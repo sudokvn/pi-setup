@@ -222,6 +222,9 @@ function withClientOwnedCache(
   };
 }
 
+const THREADS_BETA = "message-threads-2026-08-12";
+const ADVANCED_TOOL_USE_BETA = "advanced-tool-use-2025-11-20";
+
 /** CPA's own answer to a thread `continue` when it lost the thread's tool-name state. */
 const CPA_THREAD_STATE_LOST =
   "No thread state was found for the requested previous_message_id. Replay the full conversation with thread create to start a new Thread.";
@@ -237,12 +240,14 @@ const isCpaThreadStateLost = (body: unknown): boolean =>
   body.error.details === undefined;
 
 /**
- * CPA rejects such a `continue` itself, before contacting Anthropic, with a 404 that lacks the
- * `error_code` Anthropic puts on its own thread rejections. Adding `thread_not_found` lets Pi's
- * adapter resend the full conversation as a new thread once, as it does for Anthropic. Every
- * other response passes through untouched.
+ * CPA infers the advanced-tool-use beta from tool-search declarations, which Pi omits on thread
+ * continuation. Pin it after Pi builds its headers so Anthropic's thread fingerprint stays stable
+ * without replacing Pi's other betas or overriding a caller's explicit beta suppression.
+ *
+ * CPA also rejects a lost thread itself with a 404 that lacks Anthropic's `error_code`. Adding
+ * `thread_not_found` lets Pi replay the full conversation once. Other responses pass through.
  */
-function withCpaThreadErrors(
+function withCpaThreads(
   model: Model<"anthropic-messages">,
   options: StreamOptions | undefined,
 ): StreamOptions | undefined {
@@ -251,7 +256,23 @@ function withCpaThreadErrors(
   return {
     ...options,
     fetch: async (input, init) => {
-      const response = await send(input, init);
+      const requestHeaders = new Headers(
+        init?.headers ?? (input instanceof Request ? input.headers : undefined),
+      );
+      const beta = requestHeaders.get("anthropic-beta");
+      const betas = beta?.split(",").map((value) => value.trim());
+      const pinBeta =
+        betas?.includes(THREADS_BETA) &&
+        !betas.includes(ADVANCED_TOOL_USE_BETA);
+      if (pinBeta)
+        requestHeaders.set(
+          "anthropic-beta",
+          `${beta},${ADVANCED_TOOL_USE_BETA}`,
+        );
+      const response = await send(
+        input,
+        pinBeta ? { ...init, headers: requestHeaders } : init,
+      );
       if (response.status !== 404) return response;
       const body: unknown = await response
         .clone()
@@ -480,7 +501,7 @@ export function createProxyProvider(config: ProxyConfig): ProxyProvider {
     simple: boolean,
   ): AssistantMessageEventStream => {
     if (hasApi(model, "anthropic-messages")) {
-      const cached = withCpaThreadErrors(
+      const cached = withCpaThreads(
         model,
         withClientOwnedCache(model, options),
       );

@@ -1,10 +1,13 @@
+import { readFileSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { Effect } from "effect";
 import { runCommand } from "./process.ts";
 
 const COMMAND_TIMEOUT_MS = 3_000;
 const JJ_DIFF_TEMPLATE = 'path ++ "\\0" ++ status_char ++ "\\0"';
+// The change ID is split at its shortest unique prefix, as `jj log` shows it.
 const JJ_REVISION_TEMPLATE =
-  'change_id.short(8) ++ "\\0" ++ bookmarks.join("\\0") ++ "\\0"';
+  'change_id.shortest(8).prefix() ++ "\\0" ++ change_id.shortest(8).rest() ++ "\\0" ++ bookmarks.join("\\0")';
 
 export type VcsKind = "git" | "jj";
 
@@ -13,9 +16,20 @@ export interface VcsRepository {
   root: string;
 }
 
+export interface ChangeId {
+  /** Shortest prefix that identifies the change. */
+  prefix: string;
+  rest: string;
+}
+
 export interface VcsSnapshot extends VcsRepository {
   changedFiles: number;
-  label: string;
+  /** JJ change ID of the working copy. Git has none. */
+  changeId: ChangeId | null;
+  /** JJ bookmarks on the working copy, or the Git branch or detached head. */
+  refs: string[];
+  /** Folder whose name starts the part of the path that identifies the repository. */
+  nameRoot: string;
   pullRequestRefs: string[];
 }
 
@@ -35,8 +49,35 @@ function nonEmptyRecords(output: string) {
 }
 
 export function parseJjRevision(output: string) {
-  const [changeId = "", ...bookmarks] = nonEmptyRecords(output);
-  return { bookmarks, changeId };
+  // The rest is empty when the unique prefix is the whole ID, so the first
+  // two fields are positional.
+  const [prefix = "", rest = "", ...bookmarks] = output.split("\0");
+  return {
+    bookmarks: bookmarks.filter(Boolean),
+    changeId: prefix ? ({ prefix, rest } satisfies ChangeId) : null,
+  };
+}
+
+/**
+ * A secondary JJ workspace keeps `.jj/repo` as a file that points at the main
+ * repository. When the workspace sits in a folder named after that
+ * repository, as in `.workspaces/kumio/invoices`, the folder is part of its
+ * name.
+ */
+export function jjNameRoot(root: string) {
+  try {
+    const pointer = join(root, ".jj", "repo");
+    if (!statSync(pointer).isFile()) return root;
+    const store = resolve(
+      join(root, ".jj"),
+      readFileSync(pointer, "utf8").trim(),
+    );
+    const repository = basename(dirname(dirname(store)));
+    const parent = dirname(root);
+    return basename(parent) === repository ? parent : root;
+  } catch {
+    return root;
+  }
 }
 
 export function countJjChanges(output: string) {
@@ -107,17 +148,14 @@ export const loadVcsSnapshot = Effect.fn("vcs-info.loadVcsSnapshot")(function* (
     const { bookmarks, changeId } =
       revision.code === 0
         ? parseJjRevision(revision.stdout)
-        : { bookmarks: [], changeId: "" };
-    const bookmarkLabel = bookmarks.join(",");
-    const label =
-      bookmarkLabel && changeId
-        ? `${bookmarkLabel} · ${changeId}`
-        : bookmarkLabel || changeId || "@";
+        : { bookmarks: [], changeId: null };
 
     return {
       ...repository,
       changedFiles: diff.code === 0 ? countJjChanges(diff.stdout) : 0,
-      label,
+      changeId,
+      refs: bookmarks,
+      nameRoot: jjNameRoot(repository.root),
       pullRequestRefs: bookmarks,
     } satisfies VcsSnapshot;
   }
@@ -142,7 +180,9 @@ export const loadVcsSnapshot = Effect.fn("vcs-info.loadVcsSnapshot")(function* (
     ...repository,
     changedFiles:
       statusResult.code === 0 ? countGitChanges(statusResult.stdout) : 0,
-    label: branch || (shortHead ? `detached@${shortHead}` : "detached"),
+    changeId: null,
+    refs: [branch || (shortHead ? `detached@${shortHead}` : "detached")],
+    nameRoot: repository.root,
     pullRequestRefs: branch ? [branch] : [],
   } satisfies VcsSnapshot;
 });

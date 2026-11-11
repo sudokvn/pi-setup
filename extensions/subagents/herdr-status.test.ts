@@ -11,11 +11,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test, { after } from "node:test";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  ExtensionToolContext,
-  ToolDefinition,
+import {
+  createEventBus,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ExtensionToolContext,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Layer, ManagedRuntime } from "effect";
 import { BackendRegistry } from "./src/backend.ts";
@@ -279,6 +280,7 @@ function host(mode: ExtensionContext["mode"]) {
     registerEntryRenderer() {},
     registerCommand() {},
     registerShortcut() {},
+    events: createEventBus(),
     getThinkingLevel: () => "off",
   } as unknown as ExtensionAPI;
   const ctx = {
@@ -287,7 +289,6 @@ function host(mode: ExtensionContext["mode"]) {
     hasUI: mode === "tui" || mode === "rpc",
     ui: {
       theme: { fg: (_color: string, text: string) => text },
-      setStatus() {},
       notify() {},
     },
     sessionManager: {

@@ -26,9 +26,9 @@ the key simplification vs. subagents' `send()`).
 - Exit results are **pull-only** (superseding the original §9 design): an exit never writes
   into the conversation or starts a turn. `bg-wait`, `bg-status` and `bg-kill` collect
   results; `c`/`C` in `/ps` clear them.
-- A one-line widget renders **directly above the editor** while terminals run or exit
-  results await collection: `background terminals: ■ 1 running · ■ 2 ready · ■ 1 failed •
-  /ps to view` (§10).
+- The footer counts running terminals and exit results that await collection (superseding
+  the original §10 widget). The extension publishes the counts on Pi's event bus and the
+  `ui` extension draws them (§10).
 - `/ps` opens a two-stage full-screen overlay (list → detail with scrollable stdout/stderr),
   modeled on `extensions/subagents/src/ui/takeover.ts` (§11).
 
@@ -636,37 +636,17 @@ labeled sections, with truncation notes pointing at the spill file. Register a
 copy the subagent-result renderer (index.ts lines 514–561: icon by status, header line,
 8-line preview, "ctrl+o to expand").
 
-## 10. Widget above the editor
+## 10. Footer counts
 
-Requirement: visible **only while ≥1 process is running**, directly above editor, text
-`N background terminal(s) running • /ps to view`.
+The footer of the `ui` extension shows a terminal icon followed by one count per state:
+running, ready (exited, not yet collected), failed and cancelled (killed, not yet collected).
+Nothing is shown when every count is zero.
 
-API: `ctx.ui.setWidget(key, linesOrFactory)` — default placement is already **above the
-editor** (docs/extensions.md "Widgets, Status, and Footer" + tui.md Pattern 5); do NOT pass
-`placement: "belowEditor"`. Clear with `setWidget(key, undefined)`.
-
-```ts
-const updateWidget = (manager: TerminalManagerShape) => {
-  if (!ui) return;                               // captured from session_start ctx.hasUI
-  const running = manager.view.list().filter((s) => s.status === "running").length;
-  if (running === 0) { ui.setWidget("background-terminals", undefined); return; }
-  ui.setWidget("background-terminals", (_tui, theme) => {
-    const line =
-      theme.fg("warning", "■ ") +
-      theme.fg("text", `${running} background terminal${running === 1 ? "" : "s"} running`) +
-      theme.fg("dim", " • ") + theme.fg("accent", "/ps") + theme.fg("dim", " to view");
-    return { render: () => [line], invalidate: () => {} };
-  });
-};
-```
-
-Drive it from `manager.view.subscribe(...)` exactly like subagents drives `setStatus`
-(index.ts lines 139–166) — the subscription fires on every state change, including settles, so
-the widget disappears the moment the last process exits. Guard `ctx.hasUI`, tolerate an
-unavailable UI, and clear the widget in `session_shutdown` before disposing the runtime.
-
-(Singular/plural: render `1 background terminal running`, `2 background terminals running` —
-implement the requested "terminal(s)" sense as proper pluralization.)
+`index.ts` subscribes to `manager.view` and calls `publishActivity(pi, "terminals",
+countActivity(manager.view.list()))` from `extensions/shared/activity.ts` on every change.
+The subscription fires on each state change and each output chunk; the footer redraws only
+when a count changes. The extension draws nothing itself, so there is no widget to clear in
+`session_shutdown`.
 
 ## 11. `/ps` command + two-stage UI (`src/ui/ps.ts`, `src/ui/output-view.ts`)
 

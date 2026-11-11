@@ -1,7 +1,4 @@
-/** Context-utilization and activity-status formatting helpers. */
-
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { countMarker } from "../../shared/markers.ts";
+/** Context-utilization formatting helpers. */
 
 export interface ContextUtilization {
   /** Current conversation context occupancy; undefined while unknown. */
@@ -45,27 +42,4 @@ export function formatContextUtilization(usage: ContextUtilization) {
   if (capacity === undefined) return "";
   const percent = contextPercent(usage);
   return `${percent === undefined ? "?" : percent}%/${formatCompactTokens(capacity)}`;
-}
-
-interface ActivityCounts {
-  running: number;
-  /** Finished or cancelled results the parent has not collected yet. */
-  ready: number;
-  failed: number;
-}
-
-export function formatActivityStatus(theme: Theme, counts: ActivityCounts) {
-  const parts: string[] = [];
-  if (counts.running > 0) {
-    parts.push(countMarker(theme, "running", `${counts.running} running`));
-  }
-  if (counts.ready > 0) {
-    parts.push(countMarker(theme, "done", `${counts.ready} ready`));
-  }
-  if (counts.failed > 0) {
-    parts.push(countMarker(theme, "failed", `${counts.failed} failed`));
-  }
-  parts.push(theme.fg("accent", "/subagents") + theme.fg("dim", " to view"));
-
-  return `${theme.fg("muted", "subagents:")} ${parts.join(theme.fg("dim", " · "))}`;
 }

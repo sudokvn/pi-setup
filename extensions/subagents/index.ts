@@ -54,11 +54,7 @@ import {
   type ParentContext,
   type SubagentSnapshot,
 } from "./src/domain.ts";
-import {
-  formatActivityStatus,
-  formatCompactTokens,
-  formatContextUtilization,
-} from "./src/format.ts";
+import { formatCompactTokens, formatContextUtilization } from "./src/format.ts";
 import { SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
 import {
   buildSubagentSpawnResult,
@@ -88,6 +84,7 @@ import {
   type SubagentRuntime,
 } from "./src/runtime.ts";
 import { openSubagentPicker, openSubagentTakeover } from "./src/ui/takeover.ts";
+import { countActivity, publishActivity } from "../shared/activity.ts";
 import { marker } from "../shared/markers.ts";
 
 const SUBAGENT_OUTPUT_MAX_BYTES = 24 * 1024;
@@ -210,37 +207,15 @@ export default function (
         manager.view.setOnSettled((snap) => onSettled(manager, snap));
         unsubStatus?.();
         const publish = () => {
-          updateStatus(manager);
-          herdr?.update(manager.view.list());
+          const runs = manager.view.list();
+          publishActivity(pi, "subagents", countActivity(runs));
+          herdr?.update(runs);
         };
         unsubStatus = manager.view.subscribe(publish);
         publish();
         return manager;
       });
     return managerPromise;
-  };
-
-  const updateStatus = (manager: SubagentManagerShape) => {
-    if (!ui) return;
-    const subs = manager.view.list();
-    if (subs.length === 0) {
-      ui.setStatus("subagents", undefined);
-      return;
-    }
-    const running = subs.filter((snap) => snap.status === "running").length;
-    const awaiting = subs.filter(
-      (snap) => snap.status !== "running" && !snap.collected,
-    );
-    const failed = awaiting.filter((snap) => snap.status === "failed").length;
-    const ready = awaiting.length - failed;
-    if (running === 0 && ready === 0 && failed === 0) {
-      ui.setStatus("subagents", undefined);
-      return;
-    }
-    ui.setStatus(
-      "subagents",
-      formatActivityStatus(ui.theme, { running, ready, failed }),
-    );
   };
 
   const deliverBtwResult = (snap: SubagentSnapshot) => {
@@ -307,7 +282,6 @@ export default function (
     unsubStatus = undefined;
     herdr?.clear();
     herdr = undefined;
-    ui?.setStatus("subagents", undefined);
     ui = undefined;
     const closing = runtime;
     runtime = undefined;

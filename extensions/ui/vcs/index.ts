@@ -102,7 +102,9 @@ export function registerVcsInfo(
         state = {
           isRepository: true,
           kind: snapshot.kind,
-          label: snapshot.label,
+          changeId: snapshot.changeId,
+          refs: snapshot.refs,
+          nameRoot: snapshot.nameRoot,
           changedFiles: snapshot.changedFiles,
           pullRequest: referenceChanged ? null : state.pullRequest,
         };
@@ -244,7 +246,12 @@ export function registerVcsInfo(
           "info",
         );
       } else {
-        ctx.ui.notify(`No open PR found for ${state.label}`, "info");
+        const revision =
+          state.refs.join(", ") ||
+          (state.changeId
+            ? `${state.changeId.prefix}${state.changeId.rest}`
+            : "the working copy");
+        ctx.ui.notify(`No open PR found for ${revision}`, "info");
       }
     },
   });

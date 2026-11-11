@@ -1,28 +1,26 @@
 /**
  * Exit results are pull-only: a settling terminal never writes into the
- * conversation or starts a turn. The widget counts uncollected results until
+ * conversation or starts a turn. The footer counts uncollected results until
  * a tool collects them or the user clears them in /ps. Runs the real
  * extension against real shell processes.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {
-  ExtensionAPI,
-  ExtensionCommandContext,
-  ExtensionContext,
-  ExtensionToolContext,
-  ToolDefinition,
+import {
+  createEventBus,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  type ExtensionContext,
+  type ExtensionToolContext,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { onActivity, type ActivityCounts } from "../shared/activity.ts";
 import backgroundTerminals from "./index.ts";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 type Component = { handleInput?(data: string): void; dispose?(): void };
-type Widget = (
-  tui: unknown,
-  theme: unknown,
-) => { render(width: number): string[] };
 
 const theme = { fg: (_color: string, text: string) => text };
 
@@ -32,7 +30,7 @@ function host() {
   const tools = new Map<string, ToolDefinition>();
   const commands = new Map<string, Command>();
   const conversation: unknown[] = [];
-  let widget: Widget | undefined;
+  let counts: ActivityCounts | undefined;
   let pickerKeys: string[] = [];
   let idle = true;
 
@@ -48,6 +46,7 @@ function host() {
       commands.set(name, command);
     },
     registerShortcut() {},
+    events: createEventBus(),
     sendMessage(...args: unknown[]) {
       conversation.push({ sendMessage: args });
     },
@@ -65,9 +64,6 @@ function host() {
     hasUI: true,
     ui: {
       theme,
-      setWidget(_key: string, factory: Widget | undefined) {
-        widget = factory;
-      },
       notify() {},
       // Open the real picker, press the queued keys, then close it.
       async custom(
@@ -93,6 +89,9 @@ function host() {
     isIdle: () => idle,
   } as unknown as ExtensionCommandContext & ExtensionToolContext;
 
+  onActivity(pi, (_source, published) => {
+    counts = published;
+  });
   backgroundTerminals(pi);
 
   const emit = async (event: string) => {
@@ -132,7 +131,11 @@ function host() {
 
   return {
     conversation,
-    widget: () => widget?.({}, theme).render(200).join(""),
+    /** What the footer was last told to show, without the zero counts. */
+    shown: () =>
+      Object.fromEntries(
+        Object.entries(counts ?? {}).filter(([, count]) => count > 0),
+      ),
     setIdle(value: boolean) {
       idle = value;
     },
@@ -166,10 +169,10 @@ test("an exit while the parent is idle stays out of the conversation", () =>
     await pi.settleAgent();
 
     assert.deepEqual(pi.conversation, []);
-    assert.match(pi.widget() ?? "", /1 ready/);
+    assert.deepEqual(pi.shown(), { ready: 1 });
 
     assert.match(await pi.call("bg-wait", { ids: [id] }), /idle-result/);
-    assert.equal(pi.widget(), undefined);
+    assert.deepEqual(pi.shown(), {});
   }));
 
 test("an exit while the parent is busy never queues a follow-up, even after collection", () =>
@@ -177,10 +180,10 @@ test("an exit while the parent is busy never queues a follow-up, even after coll
     pi.setIdle(false);
     const id = await pi.start("echo busy-result");
     await pi.settled(id);
-    assert.match(pi.widget() ?? "", /1 ready/);
+    assert.deepEqual(pi.shown(), { ready: 1 });
 
     assert.match(await pi.call("bg-status", { id }), /busy-result/);
-    assert.equal(pi.widget(), undefined);
+    assert.deepEqual(pi.shown(), {});
     pi.setIdle(true);
     await pi.settleAgent();
 
@@ -200,38 +203,38 @@ test("a terminal that exits after a timed-out wait waits for collection", () =>
     pi.setIdle(true);
     await pi.settleAgent();
     assert.deepEqual(pi.conversation, []);
-    assert.match(pi.widget() ?? "", /1 ready/);
+    assert.deepEqual(pi.shown(), { ready: 1 });
 
     assert.match(await pi.call("bg-wait", { ids: [id] }), /late-result/);
-    assert.equal(pi.widget(), undefined);
+    assert.deepEqual(pi.shown(), {});
   }));
 
 test("bg-kill reports the result itself, so nothing waits for collection", () =>
   withHost(async (pi) => {
     const id = await pi.start("sleep 30");
-    assert.match(pi.widget() ?? "", /1 running/);
+    assert.deepEqual(pi.shown(), { running: 1 });
     assert.match(await pi.call("bg-kill", { ids: [id] }), /Killed/);
     await pi.settleAgent();
 
     assert.deepEqual(pi.conversation, []);
-    assert.equal(pi.widget(), undefined);
+    assert.deepEqual(pi.shown(), {});
   }));
 
-test("failures stay in the widget until cleared in /ps", () =>
+test("failures stay in the footer until cleared in /ps", () =>
   withHost(async (pi) => {
     const failed = await pi.start("exit 3");
     const done = await pi.start("echo fine");
     await pi.settled(failed);
     await pi.settled(done);
-    assert.match(pi.widget() ?? "", /1 ready · ✗ 1 failed/);
+    assert.deepEqual(pi.shown(), { ready: 1, failed: 1 });
 
     // `c` clears the selected terminal, `C` the rest.
     await pi.pressInPs("c");
-    assert.match(pi.widget() ?? "", /terminals: [✓✗] 1 (ready|failed) • /);
+    assert.equal(Object.keys(pi.shown()).length, 1);
     await pi.pressInPs("C");
-    assert.equal(pi.widget(), undefined);
+    assert.deepEqual(pi.shown(), {});
 
-    // Clearing only affects the widget; the result stays inspectable.
+    // Clearing only affects the footer; the result stays inspectable.
     assert.match(await pi.call("bg-status", { id: failed }), /exit 3/);
     assert.deepEqual(pi.conversation, []);
   }));

@@ -37,7 +37,7 @@ export interface TerminalSnapshot {
   readonly pid?: number;
   readonly status: TerminalStatus;
   /**
-   * False while a settled result awaits the parent: the widget counts it
+   * False while a settled result awaits the parent: the footer counts it
    * until a tool collects it or the user clears it in /ps.
    */
   readonly collected: boolean;

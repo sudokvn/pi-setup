@@ -23,11 +23,19 @@ Install these executables on `PATH` for the features you use:
 | PDF reading             | Poppler (`pdfinfo` and `pdftotext`)           |
 | Claude subagents        | Claude Code, authenticated with `claude auth` |
 | Codex subagents         | Codex CLI, authenticated with `codex login`   |
+| Footer icons            | A Nerd Font in the terminal                   |
 
 ## Included tools and commands
 
 - Dashboard with per-response runtime, VCS status and changed-file views,
   preferring JJ over Git.
+- One-line footer. The left group shows the directory, the JJ change ID, the
+  number of changed files, bookmarks and the pull request. The right group
+  shows background terminals and subagents, the model, the thinking level and
+  the context share. Background work is counted per state: ● running, ✓ ready,
+  ✗ failed and ○ cancelled. Status text from other extensions joins the left
+  group. A narrow pane drops the bookmark name and the thinking level, then
+  shortens the change ID and the parent folders.
 - One-line tool rows with the status, call, duration and, on failure, the last
   error line. Running rows show a spinner and elapsed seconds in the accent
   color; finished rows turn grey with ✓ or ✗. `codemode` rows show their call
@@ -132,8 +140,8 @@ when requesting a particular harness or model. Profiles have no automatic model
 fallback. Direct runs need their role and constraints in the prompt.
 
 Up to four runs can be active. Finished runs never post into the conversation
-or start a turn. The footer counts them as ready or failed until the agent
-collects them with `subagent-wait` or `subagent-check`. To clear them yourself,
+or start a turn. The footer counts them as ready, failed or cancelled until the
+agent collects them with `subagent-wait` or `subagent-check`. To clear them yourself,
 press `c` (selected run) or `C` (all runs) in `/subagents`; the runs stay
 available there. Recovery artifacts are stored under
 `~/.pi/agent/state/subagents/` and restored only for the same parent session.

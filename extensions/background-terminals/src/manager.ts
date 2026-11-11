@@ -142,14 +142,14 @@ export interface TerminalReadModel {
   list(): ReadonlyArray<TerminalSnapshot>;
   get(id: string): TerminalSnapshot | undefined;
   size(): number;
-  /** Any-change notification (widget, /ps list). */
+  /** Any-change notification (footer counts, /ps list). */
   subscribe(listener: () => void): () => void;
   /** Per-terminal notification (/ps detail view). */
   subscribeTo(id: string, listener: () => void): () => void;
   /** Fire-and-forget kill (dashboard/detail `x`). Unlike bg-kill, the result
    * still awaits collection by the model. */
   requestKill(id: string): void;
-  /** Mark settled results as collected so the widget stops counting them. */
+  /** Mark settled results as collected so the footer stops counting them. */
   collect(ids: Iterable<string>): void;
   /** Register the settle hook, called once per terminal after it settles. */
   setOnSettled(hook: ((snap: TerminalSnapshot) => void) | undefined): void;
@@ -315,7 +315,7 @@ const makeManager = Effect.gen(function* () {
       try {
         listener();
       } catch {
-        // A failed widget/render listener must not corrupt lifecycle state.
+        // A failed footer/render listener must not corrupt lifecycle state.
       }
     }
     if (id) {

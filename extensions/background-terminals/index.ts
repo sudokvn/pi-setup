@@ -12,7 +12,7 @@
  * - bg-kill: SIGTERM→SIGKILL the whole process tree; returns final state.
  *
  * Results are pull-only: an exit never writes into the conversation or starts
- * a turn. A one-line widget above the editor counts running terminals and
+ * a turn. The footer counts running terminals and
  * exit results the model has not collected with bg-wait, bg-status or
  * bg-kill; `c`/`C` in /ps clear them. `/ps` opens a two-stage full-screen
  * overlay (list → read-only detail with stdout/stderr toggle).
@@ -28,7 +28,6 @@ import { stringEnum } from "../shared/schema.ts";
 import type {
   ExtensionAPI,
   ExtensionContext,
-  ExtensionUIContext,
   Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -64,34 +63,12 @@ import {
 } from "./src/runtime.ts";
 import { sanitizeText } from "./src/ui/output-view.ts";
 import { openTerminalPicker } from "./src/ui/ps.ts";
-import { countMarker, marker } from "../shared/markers.ts";
-
-const WIDGET_KEY = "background-terminals";
-
-function formatWidget(
-  theme: Theme,
-  counts: { running: number; ready: number; failed: number },
-) {
-  const parts = [
-    counts.running > 0 &&
-      countMarker(theme, "running", `${counts.running} running`),
-    counts.ready > 0 && countMarker(theme, "done", `${counts.ready} ready`),
-    counts.failed > 0 &&
-      countMarker(theme, "failed", `${counts.failed} failed`),
-  ].filter((part) => part !== false);
-  return (
-    theme.fg("text", "background terminals: ") +
-    parts.join(theme.fg("dim", " · ")) +
-    theme.fg("dim", " • ") +
-    theme.fg("accent", "/ps") +
-    theme.fg("dim", " to view")
-  );
-}
+import { countActivity, publishActivity } from "../shared/activity.ts";
+import { marker } from "../shared/markers.ts";
 
 export default function (pi: ExtensionAPI) {
   let runtime: TerminalRuntime | undefined;
   let managerPromise: Promise<TerminalManagerShape> | undefined;
-  let ui: ExtensionUIContext | undefined;
   let unsubStatus: (() => void) | undefined;
 
   const getRuntime = () => (runtime ??= createTerminalRuntime());
@@ -102,50 +79,16 @@ export default function (pi: ExtensionAPI) {
       .runPromise(TerminalManager)
       .then((manager) => {
         unsubStatus?.();
-        unsubStatus = manager.view.subscribe(() => updateWidget(manager));
-        updateWidget(manager);
+        // The footer counts running terminals and exit results that await
+        // collection.
+        const publish = () =>
+          publishActivity(pi, "terminals", countActivity(manager.view.list()));
+        unsubStatus = manager.view.subscribe(publish);
+        publish();
         return manager;
       });
     return managerPromise;
   };
-
-  /** One-line widget directly above the editor while terminals run or exit
-   * results await collection. Called on every manager notification
-   * (including per-output-chunk), so it only touches setWidget when the
-   * counts actually change — replacing the widget factory hundreds of times
-   * a second would churn component creation for no visible difference. */
-  let widgetKey = "";
-  const updateWidget = (manager: TerminalManagerShape) => {
-    if (!ui) return;
-    try {
-      const terminals = manager.view.list();
-      const running = terminals.filter(
-        (snap) => snap.status === "running",
-      ).length;
-      const awaiting = terminals.filter(
-        (snap) => snap.status !== "running" && !snap.collected,
-      );
-      const failed = awaiting.filter((snap) => snap.status === "failed").length;
-      const ready = awaiting.length - failed;
-      const key = `${running}/${ready}/${failed}`;
-      if (key === widgetKey) return;
-      widgetKey = key;
-      if (running + ready + failed === 0) {
-        ui.setWidget(WIDGET_KEY, undefined);
-        return;
-      }
-      ui.setWidget(WIDGET_KEY, (_tui, theme) => {
-        const line = formatWidget(theme, { running, ready, failed });
-        return { render: () => [line], invalidate: () => {} };
-      });
-    } catch {
-      // UI may be unavailable (print/RPC modes or teardown).
-    }
-  };
-
-  pi.on("session_start", (_event, ctx) => {
-    if (ctx.hasUI) ui = ctx.ui;
-  });
 
   // /new, /resume, /fork, /reload, and quit all emit session_shutdown for
   // the old extension instance. Processes never survive a session
@@ -155,13 +98,6 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     unsubStatus?.();
     unsubStatus = undefined;
-    try {
-      ui?.setWidget(WIDGET_KEY, undefined);
-    } catch {
-      // UI may already be gone.
-    }
-    widgetKey = "";
-    ui = undefined;
     const closing = runtime;
     runtime = undefined;
     managerPromise = undefined;

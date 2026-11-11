@@ -1,31 +1,30 @@
 import { homedir } from "node:os";
-import { basename, relative } from "node:path";
+import { relative } from "node:path";
 import {
   VERSION,
   type ExtensionAPI,
   type ExtensionContext,
   type ReadonlyFooterDataProvider,
 } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import {
-  getCapabilities,
-  hyperlink,
-  truncateToWidth,
-} from "@earendil-works/pi-tui";
+  NO_ACTIVITY,
+  onActivity,
+  type ActivityCounts,
+  type ActivitySource,
+} from "../shared/activity.ts";
 import { REFRESH_CHANNEL } from "../shared/dashboard-state.ts";
 import { askUserRow } from "./ask-user.ts";
 import { codemodeRow } from "./codemode.ts";
 import { compactToolRows } from "./tool-rows.ts";
-import { fitFooterLine, type FooterSegment } from "./footer-layout.ts";
-import { createBranchCostReader } from "./session-cost.ts";
+import { renderFooterLine } from "./footer-line.ts";
 import { markTranscriptRoles } from "./transcript.ts";
 import { registerVcsInfo } from "./vcs/index.ts";
 import { emptyVcsInfoState, type VcsInfoState } from "./vcs/state.ts";
 
 interface ModelInfo {
-  provider: string;
   modelId: string;
   thinking: string;
-  contextTokens: number | null;
   contextPercent: number | null;
 }
 
@@ -52,23 +51,10 @@ function formatDirectory(cwd: string) {
   return sanitizeTerminalLabel(display);
 }
 
-function formatDirectoryCompact(cwd: string) {
-  if (cwd === homedir()) return "~";
-  return sanitizeTerminalLabel(basename(cwd) || cwd);
-}
-
-function formatTokens(tokens: number) {
-  if (tokens < 1000) return `${tokens}`;
-  if (tokens < 1_000_000) return `${(tokens / 1000).toFixed(1)}K`;
-  return `${(tokens / 1_000_000).toFixed(1)}M`;
-}
-
 function modelInfoEqual(left: ModelInfo, right: ModelInfo) {
   return (
-    left.provider === right.provider &&
     left.modelId === right.modelId &&
     left.thinking === right.thinking &&
-    left.contextTokens === right.contextTokens &&
     left.contextPercent === right.contextPercent
   );
 }
@@ -84,26 +70,39 @@ export default function ui(
 ) {
   let title = "pi";
   let modelInfo: ModelInfo = {
-    provider: "",
     modelId: "",
     thinking: "off",
-    contextTokens: null,
     contextPercent: null,
   };
-  // Cost is read at render time: background cache warming appends usage and
-  // requests a render without emitting an extension event.
-  const readBranchCost = createBranchCostReader();
   let vcsInfo = emptyVcsInfoState();
+  let activity: Record<ActivitySource, ActivityCounts> = {
+    terminals: NO_ACTIVITY,
+    subagents: NO_ACTIVITY,
+  };
   let requestRender: (() => void) | undefined;
+
+  // Sources publish on every change, including each chunk of terminal
+  // output, so only a changed count redraws the footer.
+  const stopActivityListener = onActivity(pi, (source, counts) => {
+    const shown = activity[source];
+    if (
+      shown.running === counts.running &&
+      shown.ready === counts.ready &&
+      shown.failed === counts.failed &&
+      shown.cancelled === counts.cancelled
+    ) {
+      return;
+    }
+    activity = { ...activity, [source]: counts };
+    requestRender?.();
+  });
 
   function refreshModelInfo(ctx: ExtensionContext) {
     const model = ctx.model;
     const usage = ctx.getContextUsage();
     const next: ModelInfo = {
-      provider: model?.provider ?? "",
       modelId: model?.id ?? "",
       thinking: model?.reasoning ? pi.getThinkingLevel() : "off",
-      contextTokens: usage?.tokens ?? null,
       contextPercent: usage?.percent ?? null,
     };
     if (modelInfoEqual(modelInfo, next)) return;
@@ -112,17 +111,9 @@ export default function ui(
   }
 
   registerVcs(pi, (value: VcsInfoState) => {
-    if (
-      vcsInfo.isRepository === value.isRepository &&
-      vcsInfo.kind === value.kind &&
-      vcsInfo.label === value.label &&
-      vcsInfo.changedFiles === value.changedFiles &&
-      vcsInfo.pullRequest?.number === value.pullRequest?.number &&
-      vcsInfo.pullRequest?.url === value.pullRequest?.url &&
-      vcsInfo.pullRequest?.isDraft === value.pullRequest?.isDraft
-    ) {
-      return;
-    }
+    // Every refresh publishes a state built in the same place, so equal
+    // states serialise identically.
+    if (JSON.stringify(vcsInfo) === JSON.stringify(value)) return;
     vcsInfo = value;
     requestRender?.();
   });
@@ -148,115 +139,25 @@ export default function ui(
       return {
         invalidate() {},
         render(width: number) {
-          const separator = theme.fg("dim", " · ");
-          const left: FooterSegment[] = [
-            {
-              text: theme.fg("text", formatDirectory(ctx.cwd)),
-              compactText: theme.fg("text", formatDirectoryCompact(ctx.cwd)),
-              compactAt: 25,
-              dropAt: 55,
-            },
-          ];
-
-          if (vcsInfo.kind && vcsInfo.label) {
-            left.push({
-              text: theme.fg("muted", `${vcsInfo.kind} ${vcsInfo.label}`),
-              compactText: theme.fg("muted", vcsInfo.label),
-              compactAt: 30,
-              dropAt: 50,
-            });
-          }
-          if (vcsInfo.changedFiles > 0) {
-            const fileLabel = vcsInfo.changedFiles === 1 ? "file" : "files";
-            left.push({
-              text: theme.fg(
-                "muted",
-                `${vcsInfo.changedFiles} ${fileLabel} changed`,
-              ),
-              compactText: theme.fg("muted", `+${vcsInfo.changedFiles}`),
-              compactAt: 35,
-              dropAt: 90,
-            });
-          }
-          if (vcsInfo.pullRequest) {
-            const fullLabel = `PR #${vcsInfo.pullRequest.number}`;
-            const compactLabel = `#${vcsInfo.pullRequest.number}`;
-            left.push({
-              text: getCapabilities().hyperlinks
-                ? hyperlink(fullLabel, vcsInfo.pullRequest.url)
-                : fullLabel,
-              compactText: getCapabilities().hyperlinks
-                ? hyperlink(compactLabel, vcsInfo.pullRequest.url)
-                : compactLabel,
-              compactAt: 15,
-              dropAt: 20,
-            });
-          }
-
-          const right: FooterSegment[] = [];
-          if (modelInfo.modelId) {
-            right.push({
-              text: theme.fg(
-                "muted",
-                modelInfo.provider
-                  ? `${modelInfo.provider}/${modelInfo.modelId}`
-                  : modelInfo.modelId,
-              ),
-              compactText: theme.fg("muted", modelInfo.modelId),
-              compactAt: 40,
-            });
-          }
-          if (modelInfo.thinking !== "off") {
-            right.push({
-              text: theme.fg("muted", modelInfo.thinking),
-              compactText: theme.fg(
-                "muted",
-                modelInfo.thinking === "medium" ? "med" : modelInfo.thinking,
-              ),
-              compactAt: 45,
-              dropAt: 75,
-            });
-          }
-          const statuses = footerData.getExtensionStatuses();
-          if (modelInfo.contextPercent !== null) {
-            const percent = Math.round(modelInfo.contextPercent);
-            const color =
-              percent >= 90 ? "error" : percent >= 70 ? "warning" : "muted";
-            right.push({
-              text: theme.fg(
-                color,
-                modelInfo.contextTokens === null
-                  ? `ctx ${percent}%`
-                  : `${formatTokens(modelInfo.contextTokens)} (${percent}%)`,
-              ),
-              compactText: theme.fg(color, `${percent}%`),
-              compactAt: 45,
-              dropAt: 95,
-            });
-          }
-          const cost = readBranchCost(ctx.sessionManager);
-          if (cost > 0) {
-            right.push({
-              // Three decimals, like Pi's own footer: most turns cost under a cent.
-              text: theme.fg("muted", `$${cost.toFixed(3)}`),
-              dropAt: 80,
-            });
-          }
-
-          const lines = [fitFooterLine(left, right, width, separator)];
-          const statusText = Array.from(statuses.entries())
+          const statuses = Array.from(footerData.getExtensionStatuses())
             .sort(([a], [b]) => a.localeCompare(b))
             .flatMap(([, text]) => text.split("\n"))
             .map((line) => line.trim())
-            .filter(Boolean)
-            .join(separator);
-          if (statusText) {
-            lines.push(
-              truncateToWidth(statusText, width, theme.fg("dim", "...")),
-            );
-          }
-
-          return lines;
+            .filter(Boolean);
+          return [
+            renderFooterLine(
+              theme,
+              {
+                cwd: sanitizeTerminalLabel(ctx.cwd),
+                home: homedir(),
+                vcs: vcsInfo,
+                statuses,
+                activity,
+                ...modelInfo,
+              },
+              width,
+            ),
+          ];
         },
       };
     });
@@ -283,6 +184,7 @@ export default function ui(
   pi.on("agent_settled", (_event, ctx) => refreshModelInfo(ctx));
 
   pi.on("session_shutdown", (_event, ctx) => {
+    stopActivityListener();
     requestRender = undefined;
     if (ctx.mode === "tui") {
       ctx.ui.setHeader(undefined);

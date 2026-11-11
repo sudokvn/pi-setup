@@ -11,18 +11,20 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test, { after } from "node:test";
-import type {
-  ExtensionAPI,
-  ExtensionCommandContext,
-  ExtensionContext,
-  ExtensionToolContext,
-  ToolDefinition,
+import {
+  createEventBus,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  type ExtensionContext,
+  type ExtensionToolContext,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Layer, ManagedRuntime } from "effect";
 import { BackendRegistry } from "./src/backend.ts";
 import { makeStubBackend } from "./src/backends/stub.ts";
 import type { BackendName } from "./src/domain.ts";
 import { SubagentManagerLive } from "./src/manager.ts";
+import { onActivity, type ActivityCounts } from "../shared/activity.ts";
 import subagentsExtension from "./index.ts";
 
 const stateDirectory = fs.mkdtempSync(
@@ -66,7 +68,7 @@ function host(sessionId = `parent-${Math.random().toString(36).slice(2)}`) {
   const commands = new Map<string, Command>();
   let pickerKeys: string[] = [];
   const conversation: unknown[] = [];
-  let status: string | undefined;
+  let counts: ActivityCounts | undefined;
   let idle = true;
 
   const pi = {
@@ -82,6 +84,7 @@ function host(sessionId = `parent-${Math.random().toString(36).slice(2)}`) {
       commands.set(name, command);
     },
     registerShortcut() {},
+    events: createEventBus(),
     sendMessage(...args: unknown[]) {
       conversation.push({ sendMessage: args });
     },
@@ -100,9 +103,6 @@ function host(sessionId = `parent-${Math.random().toString(36).slice(2)}`) {
     hasUI: true,
     ui: {
       theme: { fg: (_color: string, text: string) => text },
-      setStatus(_key: string, text: string | undefined) {
-        status = text;
-      },
       notify() {},
       // Open the real picker, press the queued keys, then close it.
       async custom(
@@ -130,6 +130,9 @@ function host(sessionId = `parent-${Math.random().toString(36).slice(2)}`) {
     isProjectTrusted: () => true,
   } as unknown as ExtensionCommandContext & ExtensionToolContext;
 
+  onActivity(pi, (_source, published) => {
+    counts = published;
+  });
   // Tests may inherit a live HC_TERMINAL_ID; never report to the real terminal.
   subagentsExtension(pi, createStubRuntime, () => undefined);
 
@@ -179,7 +182,11 @@ function host(sessionId = `parent-${Math.random().toString(36).slice(2)}`) {
 
   return {
     conversation,
-    status: () => status,
+    /** What the footer was last told to show, without the zero counts. */
+    shown: () =>
+      Object.fromEntries(
+        Object.entries(counts ?? {}).filter(([, count]) => count > 0),
+      ),
     setIdle(value: boolean) {
       idle = value;
     },
@@ -202,11 +209,11 @@ test("completion while the parent is idle stays out of the conversation", async 
     await pi.settleAgent();
 
     assert.deepEqual(pi.conversation, []);
-    assert.match(pi.status() ?? "", /1 ready/);
+    assert.deepEqual(pi.shown(), { ready: 1 });
 
     const collected = await pi.call("subagent-wait", { ids: [id] });
     assert.match(collected, /completed: idle completion/);
-    assert.equal(pi.status(), undefined);
+    assert.deepEqual(pi.shown(), {});
   } finally {
     await pi.shutdown();
   }
@@ -219,12 +226,12 @@ test("completion while the parent is busy never queues a follow-up, even after c
     pi.setIdle(false);
     const id = await pi.spawn("busy completion");
     await pi.settled(id);
-    assert.match(pi.status() ?? "", /1 ready/);
+    assert.deepEqual(pi.shown(), { ready: 1 });
 
     // Inspecting a settled run collects it; the parent then settles.
     const checked = await pi.call("subagent-check", { id });
     assert.match(checked, /completed: busy completion/);
-    assert.equal(pi.status(), undefined);
+    assert.deepEqual(pi.shown(), {});
     pi.setIdle(true);
     await pi.settleAgent();
 
@@ -250,13 +257,13 @@ test("a run that settles after a timed-out wait waits for collection", async () 
     pi.setIdle(true);
     await pi.settleAgent();
     assert.deepEqual(pi.conversation, []);
-    assert.match(pi.status() ?? "", /1 ready/);
+    assert.deepEqual(pi.shown(), { ready: 1 });
 
     assert.match(
       await pi.call("subagent-wait", { ids: [id] }),
       /completed: slow after timeout/,
     );
-    assert.equal(pi.status(), undefined);
+    assert.deepEqual(pi.shown(), {});
   } finally {
     await pi.shutdown();
   }
@@ -281,7 +288,7 @@ test("restored and resumed runs report only through tools and the indicator", as
     // Recovered receipts never resume or announce themselves. The user cut
     // this run off by quitting, so it is not counted as awaiting collection.
     assert.deepEqual(second.conversation, []);
-    assert.equal(second.status(), undefined);
+    assert.deepEqual(second.shown(), {});
 
     await second.call("subagent-resume", {
       id,
@@ -292,12 +299,12 @@ test("restored and resumed runs report only through tools and the indicator", as
     await second.settleAgent();
 
     assert.deepEqual(second.conversation, []);
-    assert.match(second.status() ?? "", /1 ready/);
+    assert.deepEqual(second.shown(), { ready: 1 });
     assert.match(
       await second.call("subagent-wait", { ids: [id] }),
       /completed: Continue a recovered subagent task/,
     );
-    assert.equal(second.status(), undefined);
+    assert.deepEqual(second.shown(), {});
   } finally {
     await second.shutdown();
   }
@@ -311,20 +318,20 @@ test("unseen failures stay in the footer across reloads until cleared in /subage
   const done = await first.spawn("finish normally");
   await first.settled(failed);
   await first.settled(done);
-  assert.match(first.status() ?? "", /1 ready · ✗ 1 failed/);
+  assert.deepEqual(first.shown(), { ready: 1, failed: 1 });
   await first.shutdown();
 
   const second = host(sessionId);
   await second.start();
   try {
     await second.settled(failed);
-    assert.match(second.status() ?? "", /1 ready · ✗ 1 failed/);
+    assert.deepEqual(second.shown(), { ready: 1, failed: 1 });
 
     // `c` clears the selected run, `C` the rest.
     await second.pressInPicker("c");
-    assert.match(second.status() ?? "", /^subagents: [✓✗] 1 (ready|failed) · /);
+    assert.equal(Object.keys(second.shown()).length, 1);
     await second.pressInPicker("C");
-    assert.equal(second.status(), undefined);
+    assert.deepEqual(second.shown(), {});
   } finally {
     await second.shutdown();
   }
@@ -333,7 +340,7 @@ test("unseen failures stay in the footer across reloads until cleared in /subage
   await third.start();
   try {
     await third.settled(failed);
-    assert.equal(third.status(), undefined);
+    assert.deepEqual(third.shown(), {});
     // Clearing only affects the footer; the run stays inspectable.
     assert.match(
       await third.call("subagent-check", { id: failed }),

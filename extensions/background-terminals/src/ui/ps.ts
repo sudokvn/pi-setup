@@ -207,7 +207,7 @@ class TerminalDashboard implements Component {
       if (snap && snap.status === "running") this.view.requestKill(snap.id);
       return;
     }
-    // Clearing only stops the widget counting a result; it stays listed.
+    // Clearing only stops the footer counting a result; it stays listed.
     if (data === "c") {
       const snap = terminals[this.selection.index];
       if (snap) this.view.collect([snap.id]);

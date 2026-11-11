@@ -154,41 +154,13 @@ turns the records off along with Pi's own reports. `hc get <t> --json` shows
 them under `records`.
 
 Herdr's stock Agents sidebar does not show these runs, because they do not
-have their own `hc` terminals. The experimental
-`pi-agents-experiment` mod is a copy of Herdr 0.1.14's Agents mod that adds
-them to the tree under their parent Pi, next to native child terminals and with
-the same status symbols (an `error` record shows as needing you). Clicking a run
-opens a read-only view of its assistant output and current tools. Use
-`/subagents` in Pi to send instructions or cancel a run. See
-[`UPSTREAM.md`](herdr/mods/pi-agents-experiment/UPSTREAM.md) for what changed
-from the stock mod and how the output view reads it.
-
-The experiment runs in its own layout, so Herdr's shipped layouts and mods stay
-untouched. To set it up, run these commands from the root of a pi-setup
-checkout or of the installed package under `~/.pi/agent/git/`:
-
-1. Copy the mod into Herdr's mods folder and check it:
-
-   ```sh
-   home="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
-   mkdir -p "$home/mods"
-   cp -R herdr/mods/pi-agents-experiment "$home/mods/"
-   herdr-app check "$home/mods/pi-agents-experiment"
-   ```
-
-2. Clone the main layout. Herdr switches to the clone:
-
-   ```sh
-   herdr-app do layout.clone '{"name":"main","as":"pi-subagents-experiment"}'
-   ```
-
-3. In `$home/layouts/pi-subagents-experiment.json`, change the Agents block's
-   `"mod": "agents"` to `"mod": "pi-agents-experiment"`. Change nothing else.
-   Herdr applies the edit live.
-
-To return to the stock layout, run `herdr-app do layout.switch --name main`.
-After updating this package, copy the mod folder again. Herdr updates its own
-Agents mod, not this copy.
+have their own `hc` terminals. The companion `pi-agents` desktop mod is
+maintained separately in dotfiles at
+`loki/config/herdr-app/mods/pi-agents/`, including its setup instructions and
+tests. It displays the runs under their parent Pi and opens read-only output
+previews. Child indicators do not change the parent's priority section.
+This package publishes the status records but does not install or configure
+the desktop mod. Use `/subagents` in Pi to send instructions or cancel a run.
 
 Known limit: when Pi releases the terminal for Ctrl+Z, the external editor or a
 TUI mode switch, it clears every status record of the terminal and restores

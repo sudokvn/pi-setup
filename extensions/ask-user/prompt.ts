@@ -1,9 +1,10 @@
 /** Model-facing schema descriptions for ask-user questions and answer options. */
 export const ASK_USER_PARAMETER_DESCRIPTIONS = {
   context:
-    "Optional decision context displayed directly above the question border as plain Markdown, without a tool-output wrapper. At most 300 characters in one paragraph: the essential fact or trade-off and your recommendation. Omit it for self-explanatory questions. No lists, reports, filler or repeated findings; detailed explanations belong in normal conversation.",
+    "Optional decision context displayed directly above the question border as plain Markdown, without a tool-output wrapper. At most 300 characters in one paragraph: what the user must know to answer that the questions do not say, such as the problem being decided or the reason for your recommendation. Omit it when the questions make sense without earlier messages. No lists, reports, filler or repeated findings; detailed explanations belong in normal conversation.",
   optionLabel: "Short display label for this option",
-  optionDescription: "Optional one-line description shown below the label",
+  optionDescription:
+    "Optional one-line description shown below the label, such as the reason for a recommended option",
   question: "The question to ask the user",
   questionLabel:
     "Optional short contextual label for this question, such as 'Scope' or 'Priority'",
@@ -17,7 +18,7 @@ export const ASK_USER_PARAMETER_DESCRIPTIONS = {
 
 /** Describes ask-user's single and batched multiple-choice question shapes. */
 export const ASK_USER_TOOL_DESCRIPTION =
-  "Ask the user one multiple-choice question or a batch of up to 4 questions. Pass every question in the questions array, including when asking only one. Each question has 2-5 options and accepts one answer by default; set multiSelect to true when multiple choices are valid. A free-form 'write my own answer' option is always added automatically and can accompany selections on multi-select questions. Every question must be answered before submitting a batch, and the user may dismiss the whole questionnaire without submitting anything. Optional context is limited to one short paragraph (300 characters) directly above the question border. Omit it when the question is self-explanatory; keep detailed findings in normal conversation.";
+  "Ask the user one multiple-choice question or a batch of up to 4 questions. Pass every question in the questions array, including when asking only one. Each question has 2-5 options and accepts one answer by default; set multiSelect to true when multiple choices are valid. A free-form 'write my own answer' option is always added automatically and can accompany selections on multi-select questions. Every question must be answered before submitting a batch, and the user may dismiss the whole questionnaire without submitting anything. Optional context is limited to one short paragraph (300 characters) directly above the question border. Omit it when the questions make sense without earlier messages; keep detailed findings in normal conversation.";
 
 /** Adds ask-user's single and batched multiple-choice capability to the model prompt. */
 export const ASK_USER_PROMPT_SNIPPET =
@@ -32,7 +33,9 @@ export const ASK_USER_PROMPT_GUIDELINES = [
   FREE_TEXT_GUIDANCE,
   "Batch independent questions into one ask-user call when that is more efficient. Ask dependent follow-up questions only after receiving the earlier answer.",
   "Questions are single-select by default. Set multiSelect to true when multiple choices are valid. Never include a free-form option yourself; ask-user adds one automatically.",
-  "Keep the questionnaire brief: short questions and choices, with no reports or repeated findings. Add context only when needed to decide: one paragraph, at most 300 characters, containing the essential trade-off and your recommendation. It appears directly above the question border. Omit filler context for simple questions; put detailed explanations in normal messages.",
+  "Make each ask-user call understandable without earlier messages; the user may answer it without having read them. Say what an ID, PR, failure or 'this' refers to and what approving would do, in the question or in context.",
+  "Keep the questionnaire brief: short questions and choices, with no reports or repeated findings. Add context only when the questions alone are not enough to answer: one paragraph, at most 300 characters. It appears directly above the question border. Put detailed explanations in normal messages.",
+  "For an ask-user decision where you have a preference, mark that option '(Recommended)' and give the main reason in its description or in context. Do not add recommendations to questions about facts or preferences only the user knows.",
 ];
 
 export type ReportedAnswer = {

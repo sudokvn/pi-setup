@@ -101,10 +101,13 @@ function isBlank(line: string | undefined) {
   return line === undefined || !stripTerminalSequences(line).trim();
 }
 
-function dropBlankEdges(lines: string[]) {
-  while (lines.length > 0 && isBlank(lines[0])) lines.shift();
-  while (lines.length > 0 && isBlank(lines.at(-1))) lines.pop();
-  return lines;
+/** Returns a copy: Pi caches render output, so the wrapped component's lines must stay intact. */
+function dropBlankEdges(lines: readonly string[]) {
+  let start = 0;
+  let end = lines.length;
+  while (start < end && isBlank(lines[start])) start++;
+  while (end > start && isBlank(lines[end - 1])) end--;
+  return lines.slice(start, end);
 }
 
 /** Colors and text attributes; OSC 8 links stay clickable. */

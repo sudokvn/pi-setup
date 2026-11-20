@@ -352,7 +352,7 @@ test("requires every batch question before submitting and preserves single-selec
   ]);
 });
 
-function screen(lines: string[]) {
+function screen(lines: readonly string[]) {
   return lines.map((line) => stripTerminalSequences(line).trimEnd()).join("\n");
 }
 

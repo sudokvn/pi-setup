@@ -9,7 +9,7 @@ Each child is headless, has its own context window and cannot see the parent con
 
 Delegate when isolation, parallel work, sustained investigation or independent assessment justifies the handoff. Keep trivial work with the parent. Prefer one child owning a coherent outcome over a routine research → writing → review pipeline.
 
-At most four runs can be active. The cap is fail-fast; there is no hidden queue. Results are never pushed into the conversation. Continue useful parent work, then collect them with `subagent-wait` when progress or your answer depends on them. Until then the footer counts them as ready or failed.
+At most four runs can be active. The cap is fail-fast; there is no hidden queue. Continue useful parent work. When progress or your answer depends on results and no other work remains, call `subagent-wait` with `background: true` and end your turn: a message with the results wakes the session when the wait is satisfied. Use a blocking wait only when the turn must not end first. Results of runs nobody subscribed to are never pushed; the footer counts them as ready or failed until collected.
 
 ## Choose the spawn tool
 
@@ -113,7 +113,7 @@ Do not repeat a failed call unchanged. Argument errors identify the correction o
 - `subagent-check({ id })`: factual liveness, current tools, usage, recovery and recent output
 - `subagent-list()`: tracked/recovered runs and backend readiness
 - `subagent-send({ id, message })`: steer or continue; returns `delivered`, `queued` or `unsupported`
-- `subagent-wait({ ids, mode: "all" | "any", timeoutMs? })`: wait without cancelling work on timeout or abort
+- `subagent-wait({ ids, mode: "all" | "any", timeoutMs?, background? })`: wait without cancelling work on timeout or abort; `background: true` returns immediately and wakes the session with the results
 - `subagent-cancel({ ids })`: cancel while preserving partial output and artifacts
 - `subagent-resume({ id, prompt, mode? })`: explicitly resume a recovered run; use `mode: "continuation"` to bypass a stale native session id; recovery is never automatic
 - `/subagents`: inspect or take over a run interactively

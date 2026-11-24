@@ -1,9 +1,9 @@
 /**
- * Background results are pull-only: settling never writes into the parent
- * conversation or starts a turn. The footer counts uncollected results until
- * a subagent tool collects them or the user clears them in /subagents, and
- * that state survives reloads. Runs the real extension wiring against stub
- * backends.
+ * Background results are pull-only unless subscribed: settling writes into
+ * the parent conversation only for a background subagent-wait. The footer
+ * counts uncollected results until a subagent tool collects them or the user
+ * clears them in /subagents, and that state survives reloads. Runs the real
+ * extension wiring against stub backends.
  */
 
 import assert from "node:assert/strict";
@@ -180,8 +180,18 @@ function host(sessionId = `parent-${Math.random().toString(36).slice(2)}`) {
     await commands.get("subagents")?.handler("", ctx);
   };
 
+  /** Wait until the conversation holds `count` entries. */
+  const conversationLength = async (count: number) => {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      if (conversation.length >= count) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.fail(`conversation never reached ${count} entries`);
+  };
+
   return {
     conversation,
+    conversationLength,
     /** What the footer was last told to show, without the zero counts. */
     shown: () =>
       Object.fromEntries(
@@ -235,6 +245,69 @@ test("completion while the parent is busy never queues a follow-up, even after c
     pi.setIdle(true);
     await pi.settleAgent();
 
+    assert.deepEqual(pi.conversation, []);
+  } finally {
+    await pi.shutdown();
+  }
+});
+
+test("a background wait wakes the parent once with the results", async () => {
+  const pi = host();
+  await pi.start();
+  try {
+    const id = await pi.spawn("background result");
+    const subscribed = await pi.call("subagent-wait", {
+      ids: [id],
+      background: true,
+    });
+    assert.match(subscribed, /Waiting in the background/);
+    // A second subscription to the same run must not deliver it again.
+    await pi.call("subagent-wait", { ids: [id], background: true });
+
+    await pi.settled(id);
+    await pi.conversationLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(pi.conversation.length, 1);
+    const [message, options] = (
+      pi.conversation[0] as {
+        sendMessage: [{ customType: string; content: string }, unknown];
+      }
+    ).sendMessage;
+    assert.equal(message.customType, "subagent-wake");
+    assert.match(message.content, /completed: background result/);
+    assert.deepEqual(options, { deliverAs: "followUp", triggerTurn: true });
+    assert.deepEqual(pi.shown(), {});
+  } finally {
+    await pi.shutdown();
+  }
+});
+
+test("a background wait on settled runs returns the results directly", async () => {
+  const pi = host();
+  await pi.start();
+  try {
+    const id = await pi.spawn("already done");
+    await pi.settled(id);
+    assert.match(
+      await pi.call("subagent-wait", { ids: [id], background: true }),
+      /completed: already done/,
+    );
+    assert.deepEqual(pi.conversation, []);
+    assert.deepEqual(pi.shown(), {});
+  } finally {
+    await pi.shutdown();
+  }
+});
+
+test("cancelling a subscribed run removes its wake", async () => {
+  const pi = host();
+  await pi.start();
+  try {
+    const id = await pi.spawn("cancelled while subscribed");
+    await pi.call("subagent-wait", { ids: [id], background: true });
+    await pi.call("subagent-cancel", { ids: [id] });
+    await pi.settled(id);
+    await new Promise((resolve) => setTimeout(resolve, 50));
     assert.deepEqual(pi.conversation, []);
   } finally {
     await pi.shutdown();

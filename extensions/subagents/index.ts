@@ -5,7 +5,8 @@
  * Tools (for the parent LLM):
  * - subagent-spawn: profile-driven fire-and-forget spawn.
  * - subagent-spawn-direct: explicit harness/model spawn.
- * - subagent-wait: wait for all/any with an optional non-cancelling timeout.
+ * - subagent-wait: wait for all/any with an optional non-cancelling timeout,
+ *   or subscribe in the background and end the turn.
  * - subagent-cancel: stop running work while preserving artifacts.
  * - subagent-send: steer or queue guidance with a structured receipt.
  * - subagent-resume: explicitly recover a persisted run.
@@ -14,10 +15,12 @@
  * In a Herdr terminal, run names and states are also published as status
  * records under Pi's terminal (src/herdr-status.ts).
  *
- * Results are pull-only: settling never writes into the parent conversation
- * or starts a turn. The footer counts settled results as ready or failed
- * until the parent collects them with subagent-wait or subagent-check, or
- * the user clears them in `/subagents`.
+ * Results are pull-only unless subscribed: settling writes into the parent
+ * conversation only for runs a `subagent-wait` with `background: true`
+ * subscribed to. Then one follow-up message carries the results and starts a
+ * turn. Otherwise the footer counts settled results as ready or failed until
+ * the parent collects them with subagent-wait or subagent-check, or the user
+ * clears them in `/subagents`.
  * `/subagents` opens a picker + full interactive takeover view.
  *
  * Architecture: Effect v4 generators throughout (backends -> manager ->
@@ -87,6 +90,7 @@ import { openSubagentPicker, openSubagentTakeover } from "./src/ui/takeover.ts";
 import { countActivity, publishActivity } from "../shared/activity.ts";
 import { marker } from "../shared/markers.ts";
 
+const SUBAGENT_WAKE_MESSAGE_TYPE = "subagent-wake";
 const SUBAGENT_OUTPUT_MAX_BYTES = 24 * 1024;
 const WAIT_OUTPUT_MAX_BYTES = 48 * 1024;
 const WAIT_PER_AGENT_MAX_BYTES = 16 * 1024;
@@ -146,6 +150,56 @@ function truncatedOutput(
   return text;
 }
 
+/** The text subagent-wait and a background wake return for settled runs. */
+function formatSettledResults(
+  snapshots: ReadonlyArray<SubagentSnapshot>,
+  timedOutPendingIds?: ReadonlyArray<string>,
+) {
+  const sections: string[] = [];
+  let remainingBytes = WAIT_OUTPUT_MAX_BYTES;
+  for (const snap of snapshots) {
+    const verb =
+      snap.status === "done"
+        ? "finished"
+        : snap.status === "cancelled"
+          ? "cancelled"
+          : "failed";
+    let section = `## ${snap.id} "${snap.title}" ${verb}`;
+    if (snap.errorText) section += `\nError: ${snap.errorText}`;
+    section += `\nArtifact: ${snap.artifacts.output}`;
+    const headerBytes = Buffer.byteLength(section, "utf8") + 2;
+    const outputBudget = Math.max(
+      512,
+      Math.min(WAIT_PER_AGENT_MAX_BYTES, remainingBytes - headerBytes),
+    );
+    section += `\n\n${truncatedOutput(snap, outputBudget)}`;
+    const sectionBytes = Buffer.byteLength(section, "utf8");
+    if (sectionBytes > remainingBytes) {
+      sections.push(
+        `## ${snap.id} "${snap.title}"\n\n[omitted: total wait output limit reached]`,
+      );
+      break;
+    }
+    sections.push(section);
+    remainingBytes -= sectionBytes;
+  }
+  if (timedOutPendingIds) {
+    sections.push(
+      `Wait timed out. Still running: ${timedOutPendingIds.join(", ") || "none"}. No subagents were cancelled.`,
+    );
+  }
+  if (sections.length === 0) sections.push("No settled results.");
+
+  const combined = sections.join("\n\n---\n\n");
+  const bounded = truncateHead(combined, {
+    maxBytes: WAIT_OUTPUT_MAX_BYTES - 128,
+    maxLines: DEFAULT_MAX_LINES,
+  });
+  return bounded.truncated
+    ? `${bounded.content}\n\n[wait output truncated at the total output limit]`
+    : bounded.content;
+}
+
 /**
  * Same-directory children inherit the live parent decision. An alternate cwd
  * is trusted only when pi's persisted trust store explicitly trusts it (or a
@@ -181,6 +235,8 @@ export default function (
   let ui: ExtensionUIContext | undefined;
   let unsubStatus: (() => void) | undefined;
   let herdr: HerdrStatus | undefined;
+  /** Armed background waits; aborted when the session ends. */
+  const backgroundWaits = new Set<AbortController>();
 
   const getRuntime = () => (runtime ??= createRuntime());
 
@@ -241,8 +297,8 @@ export default function (
     );
   };
 
-  // Model runs are pull-only: never push their result into the conversation
-  // or trigger a turn. That interrupts the user and repeats results the parent
+  // Model runs are pull-only unless a background wait subscribed to them:
+  // pushing every result interrupted the user and repeated results the parent
   // already used. The footer counts them until they are collected.
   const onSettled = (manager: SubagentManagerShape, snap: SubagentSnapshot) => {
     // A shutdown can settle children while disposing their scopes. Never
@@ -250,6 +306,90 @@ export default function (
     if (!sessionContext || snap.origin !== "btw") return;
     deliverBtwResult({ ...snap, meta: { ...snap.meta } });
     manager.view.collect([snap.id]);
+  };
+
+  /**
+   * Wake the parent with the results of a satisfied background wait. A
+   * follow-up never interrupts a running turn; when Pi is idle it starts one.
+   */
+  const deliverWake = (
+    manager: SubagentManagerShape,
+    snapshots: ReadonlyArray<SubagentSnapshot>,
+    pendingIds: ReadonlyArray<string>,
+  ) => {
+    const ids = snapshots.map((snap) => snap.id);
+    manager.view.collect(ids);
+    const still =
+      pendingIds.length > 0 ? ` Still running: ${pendingIds.join(", ")}.` : "";
+    pi.sendMessage(
+      {
+        customType: SUBAGENT_WAKE_MESSAGE_TYPE,
+        content:
+          `Background wait settled for ${ids.join(", ")}.${still}\n\n` +
+          `${formatSettledResults(snapshots)}\n\n` +
+          "Continue the task that was waiting on these results.",
+        display: true,
+        details: {
+          results: snapshots.map((snap) => ({
+            id: snap.id,
+            title: snap.title,
+            status: snap.status,
+          })),
+          pending: pendingIds,
+        },
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
+  };
+
+  /**
+   * Wait for the runs off the tool call and wake this session once the wait is
+   * satisfied. A run that was cancelled or already collected never wakes the
+   * parent; with mode "any" the wait then continues for the remaining runs.
+   */
+  const startBackgroundWait = (
+    manager: SubagentManagerShape,
+    ids: ReadonlyArray<string>,
+    mode: "all" | "any",
+    sessionId: string,
+  ) => {
+    const controller = new AbortController();
+    backgroundWaits.add(controller);
+    const activeRuntime = getRuntime();
+    void (async () => {
+      try {
+        let waiting = ids;
+        while (waiting.length > 0) {
+          const wait = await runTool(
+            activeRuntime,
+            manager.waitFor(waiting, mode),
+            {
+              signal: controller.signal,
+            },
+          );
+          if (
+            controller.signal.aborted ||
+            sessionContext?.sessionManager.getSessionId() !== sessionId
+          ) {
+            return;
+          }
+          const deliverable = wait.settledSnapshots.filter(
+            (snap) =>
+              snap.status !== "cancelled" &&
+              manager.view.get(snap.id)?.collected !== true,
+          );
+          if (deliverable.length > 0) {
+            deliverWake(manager, deliverable, wait.pendingIds);
+            return;
+          }
+          waiting = wait.pendingIds;
+        }
+      } catch {
+        // Aborted at session end, or the parent session is already closing.
+      } finally {
+        backgroundWaits.delete(controller);
+      }
+    })();
   };
 
   pi.on("session_start", (_event, ctx) => {
@@ -278,6 +418,8 @@ export default function (
 
   pi.on("session_shutdown", async () => {
     sessionContext = undefined;
+    for (const controller of backgroundWaits) controller.abort();
+    backgroundWaits.clear();
     unsubStatus?.();
     unsubStatus = undefined;
     herdr?.clear();
@@ -397,8 +539,13 @@ export default function (
           description: SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS.timeoutMs,
         }),
       ),
+      background: Type.Optional(
+        Type.Boolean({
+          description: SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS.background,
+        }),
+      ),
     }),
-    async execute(_toolCallId, params, signal, onUpdate) {
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const manager = await getManager();
       const ids = [...new Set(params.ids)];
       if (ids.length === 0)
@@ -417,11 +564,46 @@ export default function (
         );
       }
 
+      const mode = params.mode ?? "all";
+      if (params.background && params.timeoutMs !== undefined) {
+        throw new Error("timeoutMs cannot be combined with background.");
+      }
+      // Without a UI (print mode) ending the turn ends Pi, so nothing could
+      // be woken; such a wait blocks like an ordinary one.
+      const background = params.background === true && ctx.hasUI;
+      if (background) {
+        // A zero timeout checks the current state without waiting.
+        const probe = await runTool(
+          getRuntime(),
+          manager.waitFor(ids, mode, undefined, 0),
+        );
+        if (probe.timedOut) {
+          startBackgroundWait(
+            manager,
+            ids,
+            mode,
+            ctx.sessionManager.getSessionId(),
+          );
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `Waiting in the background for ${ids.join(", ")}. ` +
+                  `A message with the results will wake this session when ${mode === "any" ? "one of them settles" : "all of them settle"}. ` +
+                  "End your turn unless other work remains; do not wait for these ids again.",
+              },
+            ],
+            details: { mode, background: true, pending: probe.pendingIds },
+          };
+        }
+      }
+
       const wait = await runTool(
         getRuntime(),
         manager.waitFor(
           ids,
-          params.mode ?? "all",
+          mode,
           (pending) => {
             onUpdate?.({
               content: [
@@ -439,54 +621,14 @@ export default function (
       );
 
       manager.view.collect(wait.settledIds);
-      const sections: string[] = [];
-      let remainingBytes = WAIT_OUTPUT_MAX_BYTES;
-      for (const snap of wait.settledSnapshots) {
-        const id = snap.id;
-        const verb =
-          snap.status === "done"
-            ? "finished"
-            : snap.status === "cancelled"
-              ? "cancelled"
-              : "failed";
-        let section = `## ${snap.id} "${snap.title}" ${verb}`;
-        if (snap.errorText) section += `\nError: ${snap.errorText}`;
-        section += `\nArtifact: ${snap.artifacts.output}`;
-        const headerBytes = Buffer.byteLength(section, "utf8") + 2;
-        const outputBudget = Math.max(
-          512,
-          Math.min(WAIT_PER_AGENT_MAX_BYTES, remainingBytes - headerBytes),
-        );
-        section += `\n\n${truncatedOutput(snap, outputBudget)}`;
-        const sectionBytes = Buffer.byteLength(section, "utf8");
-        if (sectionBytes > remainingBytes) {
-          sections.push(
-            `## ${snap.id} "${snap.title}"\n\n[omitted: total wait output limit reached]`,
-          );
-          break;
-        }
-        sections.push(section);
-        remainingBytes -= sectionBytes;
-      }
-      if (wait.timedOut) {
-        sections.push(
-          `Wait timed out. Still running: ${wait.pendingIds.join(", ") || "none"}. No subagents were cancelled.`,
-        );
-      }
-      if (sections.length === 0) sections.push("No settled results.");
-
-      const combined = sections.join("\n\n---\n\n");
-      const bounded = truncateHead(combined, {
-        maxBytes: WAIT_OUTPUT_MAX_BYTES - 128,
-        maxLines: DEFAULT_MAX_LINES,
-      });
-      const text = bounded.truncated
-        ? `${bounded.content}\n\n[wait output truncated at the total output limit]`
-        : bounded.content;
+      const text = formatSettledResults(
+        wait.settledSnapshots,
+        wait.timedOut ? wait.pendingIds : undefined,
+      );
       return {
         content: [{ type: "text", text }],
         details: {
-          mode: params.mode ?? "all",
+          mode,
           timedOut: wait.timedOut,
           pending: wait.pendingIds,
           results: wait.settledIds.map((id) => {
@@ -824,6 +966,43 @@ export default function (
       return {
         render: (width: number) => [truncateToWidth(header, width)],
         invalidate() {},
+      };
+    },
+  );
+
+  pi.registerMessageRenderer(
+    SUBAGENT_WAKE_MESSAGE_TYPE,
+    (message, { expanded }, theme) => {
+      const details = (message.details ?? {}) as {
+        results?: ReadonlyArray<{ id?: string; status?: string }>;
+      };
+      const results = details.results ?? [];
+      const failed = results.some((result) => result.status !== "done");
+      const header =
+        `${marker(theme, failed ? "failed" : "done")} ` +
+        theme.fg(
+          "muted",
+          `subagent results · ${results.map((result) => result.id ?? "?").join(", ")}`,
+        );
+      if (!expanded) {
+        return {
+          render: (width: number) => [truncateToWidth(header, width)],
+          invalidate() {},
+        };
+      }
+      const content =
+        typeof message.content === "string" ? message.content : "";
+      const container = new Text(header, 0, 0);
+      const md = new Markdown(content, 0, 0, getMarkdownTheme());
+      return {
+        render: (width: number) => [
+          ...container.render(width),
+          ...md.render(width),
+        ],
+        invalidate: () => {
+          container.invalidate();
+          md.invalidate();
+        },
       };
     },
   );

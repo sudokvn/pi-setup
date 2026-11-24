@@ -139,9 +139,11 @@ Use `subagent-spawn` with a release-pinned profile, or `subagent-spawn-direct`
 when requesting a particular harness or model. Profiles have no automatic model
 fallback. Direct runs need their role and constraints in the prompt.
 
-Up to four runs can be active. Finished runs never post into the conversation
-or start a turn. The footer counts them as ready, failed or cancelled until the
-agent collects them with `subagent-wait` or `subagent-check`. To clear them yourself,
+Up to four runs can be active. The agent can wait in the background with
+`subagent-wait` and `background: true`, end its turn and get woken with the
+results. Other finished runs never post into the conversation or start a turn.
+The footer counts them as ready, failed or cancelled until the agent collects
+them with `subagent-wait` or `subagent-check`. To clear them yourself,
 press `c` (selected run) or `C` (all runs) in `/subagents`; the runs stay
 available there. Recovery artifacts are stored under
 `~/.pi/agent/state/subagents/` and restored only for the same parent session.
